@@ -1,0 +1,21 @@
+{
+  "name": "w",
+  "display_backend": "desktop-window",
+  "logical_width": 320,
+  "logical_height": 240,
+  "window_scale": 3,
+  "fullscreen": false,
+  "keyboard_enabled": true,
+  "audio_backend": "sdl",
+  "audio_device": "default",
+  "tracks_folder": "tracks",
+  "normalization": "lufs",
+  "target_lufs": -14.0,
+  "normalized_folder": "normalized",
+  "side_duration_minutes": 30,
+  "leader_gap_seconds": 10,
+  "track_gap_seconds": 5,
+  "counter_mode": "linear",
+  "counter_rate": 1.0,
+  "counter_config": null
+}

@@ -1,0 +1,20 @@
+{
+  "name": "pi-gpio-scart-placeholder",
+  "display_backend": "gpio-scart-placeholder",
+  "logical_width": 320,
+  "logical_height": 240,
+  "window_scale": 1,
+  "fullscreen": true,
+  "keyboard_enabled": true,
+  "audio_backend": "alsa",
+  "audio_device": "default",
+  "tracks_folder": "/home/pi/Music",
+  "normalization": "lufs",
+  "target_lufs": -14.0,
+  "normalized_folder": "normalized",
+  "side_duration_minutes": 30,
+  "leader_gap_seconds": 10,
+  "track_gap_seconds": 5,
+  "counter_mode": "linear",
+  "counter_rate": 1.0
+}

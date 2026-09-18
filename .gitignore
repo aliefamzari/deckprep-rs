@@ -1,0 +1,6 @@
+/target
+
+# Local media and generated session data
+/tracks/*
+!/tracks/.gitkeep
+/queues/*

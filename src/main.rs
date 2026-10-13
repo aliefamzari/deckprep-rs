@@ -7,15 +7,16 @@ use std::{
 use deckprep_rs::audio::AudioPlayer;
 use deckprep_rs::library::scan_tracks;
 use deckprep_rs::meter::StereoMeter;
-use deckprep_rs::queue::{load_latest_queue, save_queue_named};
+use deckprep_rs::queue::{list_queues, load_queue, save_queue_named};
 use deckprep_rs::ui::{
-    AppUi, LegendContext, NormalizationReview, ProfileEditor, QueueNameEditor, render_legend,
+    AppUi, LegendContext, NormalizationReview, ProfileEditor, QueueBrowser, QueueNameEditor,
+    render_legend,
 };
 use deckprep_rs::{
     config::{NormalizationMethod, RuntimeProfile},
     counter::TapeCounter,
     normalize::{NormalizationSettings, normalize_track},
-    timing::{SessionPlan, Track},
+    timing::SessionPlan,
     tracklist::write_tracklist,
 };
 use sdl2::{
@@ -73,6 +74,7 @@ fn main() -> Result<(), String> {
     let mut preview_meter = None;
     let mut editor: Option<ProfileEditor> = None;
     let mut queue_editor: Option<QueueNameEditor> = None;
+    let mut queue_browser: Option<QueueBrowser> = None;
     let mut review: Option<NormalizationReview> = None;
     let mut legend: Option<LegendContext> = None;
 
@@ -99,8 +101,12 @@ fn main() -> Result<(), String> {
                         editor = None;
                     } else if queue_editor.is_some() {
                         queue_editor = None;
+                    } else if queue_browser.is_some() {
+                        queue_browser = None;
                     } else if review.is_some() {
                         review = None;
+                    } else if ui.current_status().is_some() {
+                        ui.clear_normalization_status();
                     } else {
                         break 'running;
                     }
@@ -128,6 +134,41 @@ fn main() -> Result<(), String> {
                         continue;
                     }
                     if legend.is_some() {
+                        continue;
+                    }
+                    if let Some(browser) = queue_browser.as_mut() {
+                        if let Some(accept) = browser.handle_key(key) {
+                            if accept {
+                                if let Some(path) = browser.selected_path().map(Path::to_path_buf) {
+                                    match load_queue(&path) {
+                                        Ok(saved_paths) => {
+                                            let missing = ui.load_selection(&saved_paths);
+                                            let selected = ui.selected_tracks();
+                                            let plan =
+                                                SessionPlan::from_audio_tracks(&profile, &selected);
+                                            if !plan.fits() {
+                                                ui.set_normalization_status(format!(
+                                                    "QUEUE LOADED (OVER CAPACITY BY {}S)",
+                                                    -plan.remaining_seconds()
+                                                ));
+                                            } else {
+                                                ui.set_normalization_status(format!(
+                                                    "QUEUE LOADED {}{}",
+                                                    saved_paths.len().saturating_sub(missing),
+                                                    if missing > 0 {
+                                                        format!(" MISSING {missing}")
+                                                    } else {
+                                                        String::new()
+                                                    }
+                                                ));
+                                            }
+                                        }
+                                        Err(error) => ui.set_normalization_status(error),
+                                    }
+                                }
+                            }
+                            queue_browser = None;
+                        }
                         continue;
                     }
                     if let Some(active_queue_editor) = queue_editor.as_mut() {
@@ -236,19 +277,11 @@ fn main() -> Result<(), String> {
                             }
                         }
                         Keycode::O if keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD) => {
-                            match load_latest_queue("queues") {
-                                Ok(saved_paths) => {
-                                    let missing = ui.load_selection(&saved_paths);
-                                    ui.set_normalization_status(format!(
-                                        "QUEUE LOADED {}{}",
-                                        saved_paths.len().saturating_sub(missing),
-                                        if missing > 0 {
-                                            format!(" MISSING {missing}")
-                                        } else {
-                                            String::new()
-                                        }
-                                    ));
+                            match list_queues("queues") {
+                                Ok(paths) if paths.is_empty() => {
+                                    ui.set_normalization_status("NO SAVED QUEUES")
                                 }
+                                Ok(paths) => queue_browser = Some(QueueBrowser::new(paths)),
                                 Err(error) => ui.set_normalization_status(error),
                             }
                         }
@@ -289,8 +322,9 @@ fn main() -> Result<(), String> {
                                     .unwrap_or("PROFILE.JSON")
                             ));
                         }
+                        Keycode::C if keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD) => {}
                         _ => {
-                            ui.handle_key(key);
+                            ui.handle_key(key, &profile);
                             start_prep = ui.take_prep_request();
                         }
                     }
@@ -317,12 +351,14 @@ fn main() -> Result<(), String> {
         let meter_levels = preview_meter
             .as_ref()
             .map(|meter| meter.level_at(player.position_seconds()));
-        if let Some(active_queue_editor) = queue_editor.as_ref() {
+        if let Some(browser) = queue_browser.as_ref() {
+            browser.render(&mut canvas)?;
+        } else if let Some(active_queue_editor) = queue_editor.as_ref() {
             active_queue_editor.render(&mut canvas)?;
         } else if let Some(active_editor) = editor.as_ref() {
             active_editor.render(&mut canvas)?;
         } else if let Some(active_review) = review.as_ref() {
-            active_review.render(&mut canvas, &profile)?;
+            active_review.render(&mut canvas, &profile, meter_levels)?;
         } else {
             ui.render(&mut canvas, &profile, meter_levels)?;
         }
@@ -340,6 +376,11 @@ fn normalize_selected(ui: &mut AppUi, profile: &RuntimeProfile) -> Result<(), St
     let selected = ui.selected_tracks();
     if selected.is_empty() {
         ui.set_normalization_status("SELECT TRACKS FIRST");
+        return Ok(());
+    }
+    let plan = SessionPlan::from_audio_tracks(profile, &selected);
+    if !plan.fits() {
+        ui.set_normalization_status(format!("OVER CAPACITY BY {}S", -plan.remaining_seconds()));
         return Ok(());
     }
     let output_folder = Path::new(&profile.tracks_folder).join(&profile.normalized_folder);
@@ -374,18 +415,14 @@ fn build_normalization_review(
         ui.set_normalization_status("PREP BLOCKED: SELECT TRACKS");
         return Ok(None);
     }
-    let plan = SessionPlan {
-        side_capacity_seconds: profile.side_duration_minutes * 60,
-        leader_gap_seconds: profile.leader_gap_seconds,
-        track_gap_seconds: profile.track_gap_seconds,
-        tracks: selected
-            .iter()
-            .map(|track| Track {
-                name: track.name.clone(),
-                duration_seconds: track.duration_seconds,
-            })
-            .collect(),
-    };
+    let plan = SessionPlan::from_audio_tracks(profile, &selected);
+    if !plan.fits() {
+        ui.set_normalization_status(format!(
+            "PREP BLOCKED: OVER CAPACITY BY {}S",
+            -plan.remaining_seconds()
+        ));
+        return Ok(None);
+    }
     let output_folder = Path::new(&profile.tracks_folder).join(&profile.normalized_folder);
     let settings = NormalizationSettings {
         method: profile.normalization,
@@ -424,18 +461,7 @@ fn run_prep_session(
         return Ok(());
     }
 
-    let plan = SessionPlan {
-        side_capacity_seconds: profile.side_duration_minutes * 60,
-        leader_gap_seconds: profile.leader_gap_seconds,
-        track_gap_seconds: profile.track_gap_seconds,
-        tracks: selected
-            .iter()
-            .map(|track| Track {
-                name: track.name.clone(),
-                duration_seconds: track.duration_seconds,
-            })
-            .collect(),
-    };
+    let plan = SessionPlan::from_audio_tracks(profile, &selected);
     if !plan.fits() {
         ui.set_normalization_status(format!(
             "PREP BLOCKED: OVER CAPACITY BY {}S",
@@ -446,7 +472,6 @@ fn run_prep_session(
 
     let track_names: Vec<String> = selected.iter().map(|track| track.name.clone()).collect();
     let total_seconds = plan.total_seconds();
-    let session_start = Instant::now();
     let counter = TapeCounter::from_profile(profile)?;
     player.stop()?;
     let output_folder = Path::new(&profile.tracks_folder).join(&profile.normalized_folder);
@@ -458,6 +483,10 @@ fn run_prep_session(
     for track in &selected {
         normalized.push(normalize_track(track, &output_folder, settings)?);
     }
+    let session_meters: Vec<StereoMeter> = normalized
+        .iter()
+        .map(|track| StereoMeter::analyze(&track.path))
+        .collect::<Result<_, _>>()?;
     let tracklist_path = write_tracklist(
         &plan,
         &counter,
@@ -468,11 +497,6 @@ fn run_prep_session(
         },
         profile.target_lufs,
     )?;
-    let meters: Vec<StereoMeter> = normalized
-        .iter()
-        .map(|track| StereoMeter::analyze(&track.path))
-        .collect::<Result<_, _>>()?;
-
     if !wait_phase(
         canvas,
         events,
@@ -482,12 +506,13 @@ fn run_prep_session(
         "PREP",
         &track_names,
         total_seconds,
-        session_start,
+        None,
         None,
         &counter,
     )? {
         return Ok(());
     }
+    let session_start = Instant::now();
     if !wait_phase(
         canvas,
         events,
@@ -497,7 +522,7 @@ fn run_prep_session(
         "LEADER GAP",
         &track_names,
         total_seconds,
-        session_start,
+        Some(session_start),
         None,
         &counter,
     )? {
@@ -535,7 +560,9 @@ fn run_prep_session(
                 session_start.elapsed().as_secs() as u32,
                 total_seconds,
                 counter.calculate(session_start.elapsed().as_secs_f64()),
-                meters[index].level_at(player.position_seconds()),
+                session_meters[index].level_at(player.position_seconds()),
+                session_start.elapsed(),
+                true,
             )?;
             canvas.present();
             thread::sleep(Duration::from_millis(50));
@@ -550,7 +577,7 @@ fn run_prep_session(
                 "TRACK GAP",
                 &track_names,
                 total_seconds,
-                session_start,
+                Some(session_start),
                 None,
                 &counter,
             )?
@@ -571,6 +598,8 @@ fn run_prep_session(
         total_seconds,
         counter.calculate(f64::from(total_seconds)),
         (0, 0),
+        session_start.elapsed(),
+        false,
     )?;
     canvas.present();
     Ok(())
@@ -585,7 +614,7 @@ fn wait_phase(
     label: &str,
     track_names: &[String],
     total_seconds: u32,
-    session_start: Instant,
+    timeline_start: Option<Instant>,
     current_track: Option<usize>,
     counter: &TapeCounter,
 ) -> Result<bool, String> {
@@ -596,16 +625,21 @@ fn wait_phase(
             return Ok(false);
         }
         let remaining = deadline.saturating_duration_since(Instant::now()).as_secs() + 1;
+        let elapsed = timeline_start
+            .map(|start| start.elapsed())
+            .unwrap_or(Duration::ZERO);
         ui.render_recording(
             canvas,
             profile,
             &format!("{label} {remaining:02}S - Q CANCEL"),
             track_names,
             current_track,
-            session_start.elapsed().as_secs() as u32,
+            elapsed.as_secs() as u32,
             total_seconds,
-            counter.calculate(session_start.elapsed().as_secs_f64()),
+            counter.calculate(elapsed.as_secs_f64()),
             (0, 0),
+            elapsed,
+            timeline_start.is_some(),
         )?;
         canvas.present();
         thread::sleep(Duration::from_millis(50));

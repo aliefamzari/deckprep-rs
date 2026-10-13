@@ -19,8 +19,8 @@ The original Python implementation remains the behavioral reference in the sibli
 - Fixed 320x240 logical SDL2 canvas with integer scaling.
 - Desktop development profile for WSL2/WSLg.
 - Keyboard track navigation with Up/Down, J/K, Page Up/Down, Home, and End.
-- Track selection and deselection with Space.
-- Dynamic five-row track viewport with auto-scroll and scrollbar.
+- Track selection and deselection with Space, and clear selection with C.
+- Dynamic six-row track viewport with auto-scroll and scrollbar.
 - Long-title marquee for the highlighted track.
 - Dedicated track/queue workspace opened with Tab or V.
 - Queue workspace with library and selected queue columns, synchronized highlighting, fixed title/duration columns, capacity totals, and queue scrolling.
@@ -70,7 +70,8 @@ Additional workflow features:
 - Ctrl+S saves profile-editor changes; S saves an active profile snapshot outside the editor.
 - Queue save dialog with typed queue names.
 - Ctrl+S saves a named queue under `queues/`.
-- Ctrl+O loads the newest queue and reports missing tracks.
+- Ctrl+O opens a queue browser; users choose a named queue, and missing tracks are reported.
+- Queue selection order is preserved when loading and used for the prep session.
 
 Local media and generated queue files are ignored by Git. Audio must be supplied locally in `tracks/` or via the profile's `tracks_folder`.
 
@@ -80,7 +81,7 @@ The project currently passes:
 
 - `cargo fmt --check`
 - `cargo check`
-- `cargo test` with 21 tests
+- `cargo test` with 26 tests
 - Desktop SDL GUI startup smoke test under WSLg
 - Temporary WAV tests for FFprobe scanning, FFplay playback, FFmpeg normalization/cache reuse, meter analysis, and tracklist generation
 
@@ -90,8 +91,8 @@ The test environment does not validate actual Pi display takeover, GPIO timings,
 
 ### 1. Fix workflow hardening
 
-- Add an explicit queue browser so users can choose a named saved queue instead of always loading the newest one.
-- Improve queue ordering persistence and handle duplicate filenames/paths robustly.
+- Add overwrite confirmation/versioning when saving an existing queue name.
+- Handle duplicate filenames/paths robustly when loading queues.
 - Add stronger recovery when FFmpeg, FFplay, or a recording session is interrupted.
 - Separate preparation, playback, and cancellation state from the main event loop.
 - Add regression tests for UI state transitions and queue load/save behavior.

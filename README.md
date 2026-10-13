@@ -39,17 +39,18 @@ Controls:
 - `Up`/`Down` or `K`/`J`: move through tracks
 - `Page Up`/`Page Down`, `Home`/`End`: move through long libraries
 - `Space`: select or deselect
+- `C`: clear all selected tracks
 - `P`: play or pause the highlighted track; navigation does not change playback
 - `Tab`/`V`: open the dedicated track/queue workspace
 - `Left`/`Right` or `H`/`L`: seek backward/forward 10 seconds
 - `X`: stop preview
 - `N`: normalize all selected tracks into the configured cache folder
 - `Ctrl+S`: save the selected queue under `queues/`
-- `Ctrl+O`: load the newest saved queue
+- `Ctrl+O`: browse saved queues; use `Up`/`Down` and `Enter` to load
 - `S`: save the active runtime settings as a reusable profile snapshot
 - `W`: open the in-app profile editor; `Ctrl+S` saves changes and `Escape` closes it
 - `Enter`: validate, normalize, countdown, and start the prep session
-- After normalization: review the prepared tracks; press `Enter` to continue or `Escape` to go back
+- After normalization: review the prepared tracks, total session timing, tape side capacity, and remaining headroom (`REMAINING +/-S` in seconds); press `Enter` to continue or `Escape` to go back
 - In review: `Up`/`Down`, `Page Up`/`Page Down`, `Home`/`End` navigate; `P` previews the highlighted track
 - `Q` during prep: cancel the countdown or playback session
 - Tracklists are written beside the source tracks as `deck_tracklist_<timestamp>.txt`

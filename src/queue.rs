@@ -74,7 +74,7 @@ pub fn save_queue_named(
     Ok(path)
 }
 
-pub fn load_latest_queue(folder: impl AsRef<Path>) -> Result<Vec<PathBuf>, String> {
+pub fn list_queues(folder: impl AsRef<Path>) -> Result<Vec<PathBuf>, String> {
     let folder = folder.as_ref();
     let mut files: Vec<PathBuf> = fs::read_dir(folder)
         .map_err(|error| format!("failed to read {}: {error}", folder.display()))?
@@ -83,9 +83,11 @@ pub fn load_latest_queue(folder: impl AsRef<Path>) -> Result<Vec<PathBuf>, Strin
         .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
         .collect();
     files.sort();
-    let path = files
-        .pop()
-        .ok_or_else(|| "no saved queue found".to_owned())?;
+    Ok(files)
+}
+
+pub fn load_queue(path: impl AsRef<Path>) -> Result<Vec<PathBuf>, String> {
+    let path = path.as_ref();
     let contents = fs::read_to_string(&path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     let queue: SavedQueue = serde_json::from_str(&contents)
@@ -94,7 +96,16 @@ pub fn load_latest_queue(folder: impl AsRef<Path>) -> Result<Vec<PathBuf>, Strin
 }
 
 pub fn match_tracks(tracks: &[AudioTrack], saved_paths: &[PathBuf]) -> (Vec<bool>, usize) {
+    let (selected, _, missing) = match_tracks_ordered(tracks, saved_paths);
+    (selected, missing)
+}
+
+pub fn match_tracks_ordered(
+    tracks: &[AudioTrack],
+    saved_paths: &[PathBuf],
+) -> (Vec<bool>, Vec<usize>, usize) {
     let mut selected = vec![false; tracks.len()];
+    let mut order = Vec::new();
     let mut missing = 0;
     for saved_path in saved_paths {
         if let Some((index, _)) = tracks
@@ -102,12 +113,15 @@ pub fn match_tracks(tracks: &[AudioTrack], saved_paths: &[PathBuf]) -> (Vec<bool
             .enumerate()
             .find(|(_, track)| track.path == *saved_path)
         {
-            selected[index] = true;
+            if !selected[index] {
+                selected[index] = true;
+                order.push(index);
+            }
         } else {
             missing += 1;
         }
     }
-    (selected, missing)
+    (selected, order, missing)
 }
 
 #[cfg(test)]
@@ -126,7 +140,7 @@ mod tests {
     #[test]
     fn matches_saved_paths_and_reports_missing_tracks() {
         let tracks = vec![track("one.wav"), track("two.wav")];
-        let (selected, missing) = match_tracks(
+        let (selected, order, missing) = match_tracks_ordered(
             &tracks,
             &[
                 PathBuf::from("tracks/two.wav"),
@@ -134,6 +148,7 @@ mod tests {
             ],
         );
         assert_eq!(selected, vec![false, true]);
+        assert_eq!(order, vec![1]);
         assert_eq!(missing, 1);
     }
 

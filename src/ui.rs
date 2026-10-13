@@ -11,7 +11,8 @@ use sdl2::{
 use crate::{
     config::{CounterMode, NormalizationMethod, RuntimeProfile},
     library::AudioTrack,
-    queue::match_tracks,
+    queue::match_tracks_ordered,
+    timing::SessionPlan,
 };
 
 const BACKGROUND: Color = Color::RGB(12, 15, 16);
@@ -21,18 +22,21 @@ const AMBER: Color = Color::RGB(242, 178, 74);
 const CREAM: Color = Color::RGB(220, 218, 196);
 const DIM: Color = Color::RGB(88, 101, 91);
 const RED: Color = Color::RGB(211, 76, 65);
-const VISIBLE_TRACKS: usize = 5;
+const VISIBLE_TRACKS: usize = 6;
 const TRACK_NAME_WIDTH: usize = 14;
+pub const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct AppUi {
     tracks: Vec<AudioTrack>,
     cursor: usize,
     viewport_start: usize,
     selected: Vec<bool>,
+    selection_order: Vec<usize>,
     armed: bool,
     previewing: bool,
     preview_paused: bool,
     normalization_status: String,
+    status_updated_at: Option<Instant>,
     prep_requested: bool,
     focus_changed_at: Instant,
     library_error: Option<String>,
@@ -47,6 +51,97 @@ pub struct ProfileEditor {
 
 pub struct QueueNameEditor {
     pub name: String,
+}
+
+pub struct QueueBrowser {
+    pub paths: Vec<std::path::PathBuf>,
+    cursor: usize,
+    viewport_start: usize,
+}
+
+impl QueueBrowser {
+    pub fn new(paths: Vec<std::path::PathBuf>) -> Self {
+        Self {
+            paths,
+            cursor: 0,
+            viewport_start: 0,
+        }
+    }
+
+    pub fn handle_key(&mut self, key: Keycode) -> Option<bool> {
+        match key {
+            Keycode::Up | Keycode::K => self.cursor = self.cursor.saturating_sub(1),
+            Keycode::Down | Keycode::J if !self.paths.is_empty() => {
+                self.cursor = (self.cursor + 1).min(self.paths.len() - 1)
+            }
+            Keycode::PageUp => self.cursor = self.cursor.saturating_sub(7),
+            Keycode::PageDown if !self.paths.is_empty() => {
+                self.cursor = (self.cursor + 7).min(self.paths.len() - 1)
+            }
+            Keycode::Home => self.cursor = 0,
+            Keycode::End if !self.paths.is_empty() => self.cursor = self.paths.len() - 1,
+            Keycode::Return => return Some(true),
+            Keycode::Escape | Keycode::Q => return Some(false),
+            _ => {}
+        }
+        if self.cursor < self.viewport_start {
+            self.viewport_start = self.cursor;
+        }
+        if self.cursor >= self.viewport_start + 7 {
+            self.viewport_start = self.cursor + 1 - 7;
+        }
+        None
+    }
+
+    pub fn selected_path(&self) -> Option<&std::path::Path> {
+        self.paths.get(self.cursor).map(std::path::PathBuf::as_path)
+    }
+
+    pub fn render(&self, canvas: &mut Canvas<Window>) -> Result<(), String> {
+        canvas.set_draw_color(BACKGROUND);
+        canvas.clear();
+        outline(canvas, Rect::new(18, 20, 284, 200), AMBER)?;
+        fill(canvas, Rect::new(20, 22, 280, 196), PANEL)?;
+        text(canvas, 32, 32, "LOAD SAVED QUEUE", 2, PHOSPHOR)?;
+        if self.paths.is_empty() {
+            text(canvas, 38, 74, "NO SAVED QUEUES", 1, DIM)?;
+        }
+        for (row, path) in self
+            .paths
+            .iter()
+            .skip(self.viewport_start)
+            .take(7)
+            .enumerate()
+        {
+            let index = self.viewport_start + row;
+            let y = 60 + row as i32 * 17;
+            if index == self.cursor {
+                fill(
+                    canvas,
+                    Rect::new(28, y - 3, 264, 14),
+                    Color::RGB(42, 48, 43),
+                )?;
+            }
+            let name = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("QUEUE");
+            text(
+                canvas,
+                34,
+                y,
+                &compact_track_name(name, 35),
+                1,
+                if index == self.cursor {
+                    PHOSPHOR
+                } else {
+                    CREAM
+                },
+            )?;
+        }
+        text(canvas, 32, 190, "ENTER LOAD   ESC CANCEL", 1, DIM)?;
+        Ok(())
+    }
 }
 
 impl QueueNameEditor {
@@ -112,10 +207,11 @@ pub fn render_legend(canvas: &mut Canvas<Window>, context: LegendContext) -> Res
         LegendContext::Main => &[
             ("UP/DOWN", "MOVE TRACK"),
             ("SPACE", "SELECT"),
+            ("C", "CLEAR SELECTION"),
             ("P", "PREVIEW"),
             ("X", "STOP"),
             ("N", "NORMALIZE"),
-            ("CTRL-S/O", "QUEUE SAVE/LOAD"),
+            ("CTRL-S/O", "QUEUE SAVE/BROWSE"),
             ("ENTER", "PREPARE"),
             ("TAB / V", "SELECTED QUEUE"),
             ("W", "PROFILE EDITOR"),
@@ -138,12 +234,14 @@ pub fn render_legend(canvas: &mut Canvas<Window>, context: LegendContext) -> Res
             ("ESC", "CLOSE"),
         ],
     };
+    let spacing = if lines.len() > 7 { 13 } else { 17 };
+    let start_y = if lines.len() > 7 { 56 } else { 62 };
     for (index, (key, action)) in lines.iter().enumerate() {
-        let y = 64 + index as i32 * 17;
+        let y = start_y + index as i32 * spacing;
         text(canvas, 42, y, key, 1, AMBER)?;
         text(canvas, 142, y, action, 1, CREAM)?;
     }
-    text(canvas, 42, 193, "? / ESC CLOSE", 1, RED)?;
+    text(canvas, 42, 195, "? / ESC CLOSE", 1, RED)?;
     Ok(())
 }
 
@@ -182,6 +280,7 @@ impl NormalizationReview {
         &self,
         canvas: &mut Canvas<Window>,
         profile: &RuntimeProfile,
+        meter_levels: Option<(usize, usize)>,
     ) -> Result<(), String> {
         canvas.set_draw_color(BACKGROUND);
         canvas.clear();
@@ -273,6 +372,10 @@ impl NormalizationReview {
             1,
             capacity_color,
         )?;
+        text(canvas, 203, 184, "L", 1, DIM)?;
+        meter(canvas, 212, 184, meter_levels.map_or(0, |levels| levels.0))?;
+        text(canvas, 203, 194, "R", 1, DIM)?;
+        meter(canvas, 212, 194, meter_levels.map_or(0, |levels| levels.1))?;
         text(canvas, 14, 215, "P PREVIEW", 1, AMBER)?;
         text(canvas, 104, 215, "X STOP", 1, RED)?;
         text(canvas, 160, 215, "ENTER NEXT", 1, AMBER)?;
@@ -460,10 +563,12 @@ impl AppUi {
             cursor: 0,
             viewport_start: 0,
             selected,
+            selection_order: Vec::new(),
             armed: false,
             previewing: false,
             preview_paused: false,
             normalization_status: String::new(),
+            status_updated_at: None,
             prep_requested: false,
             focus_changed_at: Instant::now(),
             library_error,
@@ -472,7 +577,7 @@ impl AppUi {
         }
     }
 
-    pub fn handle_key(&mut self, key: Keycode) {
+    pub fn handle_key(&mut self, key: Keycode, profile: &RuntimeProfile) {
         if self.tracks.is_empty() {
             return;
         }
@@ -491,8 +596,28 @@ impl AppUi {
             Keycode::Home => self.cursor = 0,
             Keycode::End => self.cursor = self.tracks.len() - 1,
             Keycode::Space => {
-                self.selected[self.cursor] = !self.selected[self.cursor];
-                self.selected_panel = self.selected.iter().any(|is_selected| *is_selected);
+                if self.selected[self.cursor] {
+                    self.selected[self.cursor] = false;
+                    self.selection_order.retain(|index| *index != self.cursor);
+                    self.selected_panel = self.selected.iter().any(|is_selected| *is_selected);
+                } else if let Some(track) = self.tracks.get(self.cursor) {
+                    let mut candidate_tracks = self.selected_tracks();
+                    candidate_tracks.push(track.clone());
+                    let plan = SessionPlan::from_audio_tracks(profile, &candidate_tracks);
+                    if plan.fits() {
+                        self.selected[self.cursor] = true;
+                        self.selection_order.push(self.cursor);
+                        self.selected_panel = true;
+                    } else {
+                        self.set_normalization_status(format!(
+                            "EXCEEDS CAPACITY (MAX {:02}:00)",
+                            profile.side_duration_minutes
+                        ));
+                    }
+                }
+            }
+            Keycode::C => {
+                self.clear_selection();
             }
             Keycode::Return => {
                 self.armed = !self.armed;
@@ -529,23 +654,50 @@ impl AppUi {
     }
 
     pub fn selected_tracks(&self) -> Vec<AudioTrack> {
-        self.tracks
+        self.selection_order
             .iter()
-            .zip(&self.selected)
-            .filter(|(_, selected)| **selected)
-            .map(|(track, _)| track.clone())
+            .filter_map(|index| self.tracks.get(*index))
+            .cloned()
             .collect()
     }
 
+    pub fn clear_selection(&mut self) {
+        if self.selected.iter().any(|&is_selected| is_selected) {
+            self.selected.fill(false);
+            self.selection_order.clear();
+            self.selected_panel = false;
+            self.armed = false;
+            if self.normalization_status.starts_with("EXCEEDS CAPACITY") {
+                self.clear_normalization_status();
+            }
+        }
+    }
+
     pub fn load_selection(&mut self, saved_paths: &[std::path::PathBuf]) -> usize {
-        let (selected, missing) = match_tracks(&self.tracks, saved_paths);
+        let (selected, order, missing) = match_tracks_ordered(&self.tracks, saved_paths);
         self.selected = selected;
+        self.selection_order = order;
         self.selected_panel = self.selected.iter().any(|is_selected| *is_selected);
         missing
     }
 
     pub fn set_normalization_status(&mut self, status: impl Into<String>) {
         self.normalization_status = status.into();
+        self.status_updated_at = Some(Instant::now());
+    }
+
+    pub fn current_status(&self) -> Option<&str> {
+        if let Some(timestamp) = self.status_updated_at {
+            if timestamp.elapsed() < STATUS_TIMEOUT && !self.normalization_status.is_empty() {
+                return Some(&self.normalization_status);
+            }
+        }
+        None
+    }
+
+    pub fn clear_normalization_status(&mut self) {
+        self.normalization_status.clear();
+        self.status_updated_at = None;
     }
 
     pub fn take_prep_request(&mut self) -> bool {
@@ -597,6 +749,7 @@ impl AppUi {
             &self.selected,
             self.focus_changed_at.elapsed(),
             self.library_error.as_deref(),
+            profile,
         )?;
         if self.selected_panel {
             draw_selected_panel(
@@ -605,6 +758,7 @@ impl AppUi {
                 &self.selected,
                 self.cursor,
                 self.focus_changed_at.elapsed(),
+                profile,
             )?;
         } else {
             draw_deck_monitor(
@@ -624,8 +778,8 @@ impl AppUi {
         tiny_text(canvas, 195, 218, "QUEUE TAB", Color::RGB(92, 148, 224))?;
         tiny_text(canvas, 249, 218, "PREP ENT", Color::RGB(220, 104, 190))?;
         tiny_text(canvas, 290, 218, "?", Color::RGB(246, 208, 82))?;
-        if !self.normalization_status.is_empty() {
-            text(canvas, 14, 205, &self.normalization_status, 1, AMBER)?;
+        if let Some(status) = self.current_status() {
+            text(canvas, 14, 205, status, 1, AMBER)?;
         }
 
         Ok(())
@@ -692,15 +846,25 @@ impl AppUi {
                 DIM,
             )?;
         }
-        draw_scrollbar_at(canvas, 151, 58, 2, self.tracks.len(), self.viewport_start)?;
+        draw_scrollbar_at(
+            canvas,
+            151,
+            58,
+            135,
+            2,
+            self.tracks.len(),
+            self.viewport_start,
+            7,
+        )?;
 
         let selected_tracks: Vec<(usize, &AudioTrack)> = self
-            .tracks
+            .selection_order
             .iter()
-            .enumerate()
-            .zip(&self.selected)
-            .filter(|(_, selected)| **selected)
-            .map(|((index, track), _)| (index, track))
+            .filter_map(|source_index| {
+                self.tracks
+                    .get(*source_index)
+                    .map(|track| (*source_index, track))
+            })
             .collect();
         for (row, (source_index, track)) in selected_tracks.iter().take(7).enumerate() {
             let y = 60 + row as i32 * 17;
@@ -736,17 +900,20 @@ impl AppUi {
             )?;
         }
 
-        let total_seconds: u32 = selected_tracks
+        let selected_audio: Vec<AudioTrack> = selected_tracks
             .iter()
-            .map(|(_, track)| track.duration_seconds)
-            .sum();
+            .map(|(_, track)| (*track).clone())
+            .collect();
+        let plan = SessionPlan::from_audio_tracks(profile, &selected_audio);
+        let total_seconds = plan.total_seconds();
+        let total_color = if plan.fits() { PHOSPHOR } else { RED };
         text(
             canvas,
             169,
             180,
             &format!("TOTAL {:02}:{:02}", total_seconds / 60, total_seconds % 60),
             1,
-            PHOSPHOR,
+            total_color,
         )?;
         text(
             canvas,
@@ -756,6 +923,9 @@ impl AppUi {
             1,
             DIM,
         )?;
+        if let Some(status) = self.current_status() {
+            text(canvas, 14, 197, status, 1, AMBER)?;
+        }
         fill(canvas, Rect::new(9, 207, 302, 24), PANEL)?;
         tiny_text(canvas, 16, 216, "TAB CLOSE", AMBER)?;
         tiny_text(canvas, 82, 216, "SPACE SELECT", CREAM)?;
@@ -775,6 +945,8 @@ impl AppUi {
         total_seconds: u32,
         counter: u32,
         meter_levels: (usize, usize),
+        marquee_elapsed: Duration,
+        counter_running: bool,
     ) -> Result<(), String> {
         canvas.set_draw_color(BACKGROUND);
         canvas.clear();
@@ -789,20 +961,21 @@ impl AppUi {
             canvas,
             207,
             43,
-            &format!("PROFILE {}", profile.name),
+            &clipped_track_name(&format!("PROFILE {}", profile.name), 16),
             1,
             DIM,
         )?;
         text(canvas, 14, 57, "TAPE COUNTER", 1, CREAM)?;
-        draw_counter(canvas, 33, 70, counter)?;
-        text(canvas, 14, 109, "LINEAR / MM:SS", 1, DIM)?;
+        draw_counter(canvas, 22, 70, counter)?;
+        draw_tape_reels(canvas, 153, 57, marquee_elapsed, counter_running)?;
 
         let total = total_seconds.max(1);
         let progress = elapsed_seconds.min(total);
+        let remaining = total.saturating_sub(progress);
         text(
             canvas,
             14,
-            120,
+            112,
             &format!(
                 "TIME {:02}:{:02} / {:02}:{:02}",
                 progress / 60,
@@ -813,40 +986,67 @@ impl AppUi {
             1,
             CREAM,
         )?;
-        progress_bar(canvas, 14, 132, progress, total, 170)?;
+        text(
+            canvas,
+            205,
+            112,
+            &format!("LEFT {:02}:{:02}", remaining / 60, remaining % 60),
+            1,
+            AMBER,
+        )?;
+        progress_bar(canvas, 14, 124, progress, total, 292)?;
 
         let current_label = current_track
             .and_then(|index| track_names.get(index))
-            .map(|name| visible_track_name(name, false, 0))
+            .map(|name| marquee_track_name(name, 45, marquee_elapsed))
             .unwrap_or_else(|| "STANDBY".to_owned());
-        text(canvas, 14, 146, "NOW PLAYING", 1, AMBER)?;
-        text(canvas, 14, 157, &current_label, 1, PHOSPHOR)?;
+        text(canvas, 14, 137, "NOW PLAYING", 1, AMBER)?;
+        text(canvas, 14, 148, &current_label, 1, PHOSPHOR)?;
 
-        fill(canvas, Rect::new(9, 171, 302, 36), PANEL)?;
-        text(canvas, 14, 175, "SESSION TRACKS", 1, AMBER)?;
-        for (index, name) in track_names.iter().take(3).enumerate() {
+        fill(canvas, Rect::new(9, 163, 302, 68), PANEL)?;
+        text(canvas, 14, 166, "SESSION TRACKS", 1, AMBER)?;
+        text(canvas, 194, 166, "OUTPUT", 1, AMBER)?;
+        let queue_start = current_track
+            .unwrap_or(0)
+            .saturating_sub(2)
+            .min(track_names.len().saturating_sub(6));
+        for (row, (index, name)) in track_names
+            .iter()
+            .enumerate()
+            .skip(queue_start)
+            .take(6)
+            .enumerate()
+        {
             let color = if current_track == Some(index) {
                 PHOSPHOR
             } else {
                 CREAM
             };
-            let display_name = visible_track_name(name, false, 0);
+            let display_name = if current_track == Some(index) {
+                marquee_track_name(name, 23, marquee_elapsed)
+            } else {
+                clipped_track_name(name, 23)
+            };
+            if current_track == Some(index) {
+                fill(
+                    canvas,
+                    Rect::new(12, 174 + row as i32 * 9, 164, 9),
+                    Color::RGB(42, 48, 43),
+                )?;
+            }
             text(
                 canvas,
                 16,
-                185 + index as i32 * 8,
+                175 + row as i32 * 9,
                 &format!("{:02} {}", index + 1, display_name),
                 1,
                 color,
             )?;
         }
-
-        fill(canvas, Rect::new(9, 211, 302, 20), PANEL)?;
-        text(canvas, 14, 215, "Q CANCEL", 1, RED)?;
-        text(canvas, 100, 215, "L", 1, DIM)?;
-        meter(canvas, 110, 216, meter_levels.0)?;
-        text(canvas, 100, 224, "R", 1, DIM)?;
-        meter(canvas, 110, 225, meter_levels.1)?;
+        text(canvas, 194, 179, "L", 1, DIM)?;
+        meter(canvas, 205, 178, meter_levels.0)?;
+        text(canvas, 194, 193, "R", 1, DIM)?;
+        meter(canvas, 205, 192, meter_levels.1)?;
         Ok(())
     }
 }
@@ -908,6 +1108,68 @@ fn draw_counter(canvas: &mut Canvas<Window>, x: i32, y: i32, value: u32) -> Resu
     Ok(())
 }
 
+fn draw_tape_reels(
+    canvas: &mut Canvas<Window>,
+    x: i32,
+    y: i32,
+    elapsed: Duration,
+    rotating: bool,
+) -> Result<(), String> {
+    outline(canvas, Rect::new(x, y, 154, 52), DIM)?;
+    let left_center = (x + 34, y + 26);
+    let right_center = (x + 120, y + 26);
+    canvas.set_draw_color(Color::RGB(68, 82, 72));
+    canvas.draw_line(
+        (left_center.0 + 13, left_center.1),
+        (right_center.0 - 13, right_center.1),
+    )?;
+    let angle = if rotating {
+        elapsed.as_secs_f64() * 2.8
+    } else {
+        0.0
+    };
+    draw_reel(canvas, left_center.0, left_center.1, angle, PHOSPHOR)?;
+    draw_reel(canvas, right_center.0, right_center.1, -angle * 0.72, AMBER)?;
+    Ok(())
+}
+
+fn draw_reel(
+    canvas: &mut Canvas<Window>,
+    center_x: i32,
+    center_y: i32,
+    angle: f64,
+    color: Color,
+) -> Result<(), String> {
+    for offset_y in -14_i32..=14 {
+        for offset_x in -14_i32..=14 {
+            let distance = offset_x * offset_x + offset_y * offset_y;
+            if (distance - 144).abs() <= 14 || distance <= 10 {
+                fill(
+                    canvas,
+                    Rect::new(center_x + offset_x, center_y + offset_y, 1, 1),
+                    color,
+                )?;
+            }
+        }
+    }
+    canvas.set_draw_color(color);
+    for spoke in 0..3 {
+        let spoke_angle = angle + f64::from(spoke) * std::f64::consts::TAU / 3.0;
+        let inner = 4.0;
+        let outer = 10.0;
+        let start = (
+            center_x + (spoke_angle.cos() * inner).round() as i32,
+            center_y + (spoke_angle.sin() * inner).round() as i32,
+        );
+        let end = (
+            center_x + (spoke_angle.cos() * outer).round() as i32,
+            center_y + (spoke_angle.sin() * outer).round() as i32,
+        );
+        canvas.draw_line(start, end)?;
+    }
+    Ok(())
+}
+
 fn progress_bar(
     canvas: &mut Canvas<Window>,
     x: i32,
@@ -932,10 +1194,18 @@ fn draw_tracks(
     selected: &[bool],
     focus_elapsed: Duration,
     library_error: Option<&str>,
+    profile: &RuntimeProfile,
 ) -> Result<(), String> {
     fill(canvas, Rect::new(9, 53, 174, 154), PANEL)?;
     text(canvas, 14, 58, "TRACK QUEUE", 1, AMBER)?;
-    text(canvas, 109, 58, "SIDE A / C60", 1, DIM)?;
+    text(
+        canvas,
+        103,
+        58,
+        &format!("SIDE {:02}:00", profile.side_duration_minutes),
+        1,
+        DIM,
+    )?;
     canvas.set_draw_color(DIM);
     canvas.draw_line((14, 68), (177, 68))?;
 
@@ -952,11 +1222,11 @@ fn draw_tracks(
     let visible_end = (viewport_start + VISIBLE_TRACKS).min(tracks.len());
     for (row, track) in tracks[viewport_start..visible_end].iter().enumerate() {
         let index = viewport_start + row;
-        let y = 75 + row as i32 * 23;
+        let y = 74 + row as i32 * 21;
         if index == cursor {
             fill(
                 canvas,
-                Rect::new(12, y - 3, 168, 18),
+                Rect::new(12, y - 3, 168, 17),
                 Color::RGB(42, 48, 43),
             )?;
         }
@@ -988,34 +1258,6 @@ fn draw_tracks(
     }
 
     draw_scrollbar(canvas, tracks.len(), viewport_start)?;
-
-    let selected_count = selected.iter().filter(|value| **value).count();
-    let selected_seconds: u32 = tracks
-        .iter()
-        .zip(selected)
-        .filter(|(_, is_selected)| **is_selected)
-        .map(|(track, _)| track.duration_seconds)
-        .sum();
-    text(
-        canvas,
-        14,
-        194,
-        &format!("SELECTED {selected_count:02}"),
-        1,
-        PHOSPHOR,
-    )?;
-    text(
-        canvas,
-        113,
-        194,
-        &format!(
-            "{:02}:{:02} / 30:00",
-            selected_seconds / 60,
-            selected_seconds % 60
-        ),
-        1,
-        AMBER,
-    )?;
     Ok(())
 }
 
@@ -1037,6 +1279,32 @@ fn visible_track_name(name: &str, highlighted: bool, offset: usize) -> String {
         .collect()
 }
 
+fn clipped_track_name(name: &str, width: usize) -> String {
+    let characters: Vec<char> = name.chars().collect();
+    if characters.len() <= width {
+        return characters.into_iter().collect();
+    }
+    characters[..width.saturating_sub(1)]
+        .iter()
+        .chain(std::iter::once(&'.'))
+        .collect()
+}
+
+fn marquee_track_name(name: &str, width: usize, elapsed: Duration) -> String {
+    let characters: Vec<char> = name.chars().collect();
+    if characters.len() <= width {
+        return characters.into_iter().collect();
+    }
+    if elapsed < Duration::from_millis(900) {
+        return clipped_track_name(name, width);
+    }
+    let padded: Vec<char> = format!("{name}    ").chars().collect();
+    let offset = ((elapsed - Duration::from_millis(900)).as_millis() / 160) as usize;
+    (0..width)
+        .map(|index| padded[(offset + index) % padded.len()])
+        .collect()
+}
+
 fn marquee_offset(elapsed: Duration, name_length: usize) -> usize {
     if name_length <= TRACK_NAME_WIDTH || elapsed < Duration::from_millis(900) {
         return 0;
@@ -1052,29 +1320,39 @@ fn draw_scrollbar(
     if track_count <= VISIBLE_TRACKS {
         return Ok(());
     }
-    draw_scrollbar_at(canvas, 176, 73, 2, track_count, viewport_start)
+    draw_scrollbar_at(
+        canvas,
+        176,
+        73,
+        127,
+        2,
+        track_count,
+        viewport_start,
+        VISIBLE_TRACKS,
+    )
 }
 
 fn draw_scrollbar_at(
     canvas: &mut Canvas<Window>,
     x: i32,
     top: i32,
+    height: u32,
     width: u32,
     track_count: usize,
     viewport_start: usize,
+    visible_count: usize,
 ) -> Result<(), String> {
-    const HEIGHT: u32 = 109;
-    if track_count <= VISIBLE_TRACKS {
+    if track_count <= visible_count {
         return Ok(());
     }
     fill(
         canvas,
-        Rect::new(x, top, width, HEIGHT),
+        Rect::new(x, top, width, height),
         Color::RGB(45, 52, 47),
     )?;
-    let thumb_height = ((HEIGHT as usize * VISIBLE_TRACKS) / track_count).max(8) as u32;
-    let max_start = track_count - VISIBLE_TRACKS;
-    let travel = HEIGHT - thumb_height;
+    let thumb_height = ((height as usize * visible_count) / track_count).max(8) as u32;
+    let max_start = track_count - visible_count;
+    let travel = height - thumb_height;
     let thumb_y = top + (travel as usize * viewport_start / max_start) as i32;
     fill(
         canvas,
@@ -1118,20 +1396,109 @@ mod tests {
 
     #[test]
     fn navigation_keeps_highlight_inside_viewport() {
+        let profile = RuntimeProfile::default();
         let mut ui = AppUi::new(tracks(12), None);
         for _ in 0..7 {
-            ui.handle_key(Keycode::Down);
+            ui.handle_key(Keycode::Down, &profile);
         }
         assert_eq!(ui.cursor, 7);
-        assert_eq!(ui.viewport_start, 3);
+        assert_eq!(ui.viewport_start, 2);
 
-        ui.handle_key(Keycode::Home);
+        ui.handle_key(Keycode::Home, &profile);
         assert_eq!(ui.cursor, 0);
         assert_eq!(ui.viewport_start, 0);
 
-        ui.handle_key(Keycode::End);
+        ui.handle_key(Keycode::End, &profile);
         assert_eq!(ui.cursor, 11);
-        assert_eq!(ui.viewport_start, 7);
+        assert_eq!(ui.viewport_start, 6);
+    }
+
+    #[test]
+    fn track_selection_enforces_side_capacity() {
+        let mut profile = RuntimeProfile::default();
+        // 3 minutes capacity = 180 seconds. Leader = 10s, gap = 5s.
+        profile.side_duration_minutes = 3;
+        profile.leader_gap_seconds = 10;
+        profile.track_gap_seconds = 5;
+
+        // Tracks are 60 seconds each.
+        // Track 0: 10 + 60 = 70s <= 180s. Fits!
+        // Track 1: 10 + 60 + 60 + 5 = 135s <= 180s. Fits!
+        // Track 2: 10 + 60 + 60 + 60 + 10 = 200s > 180s. Exceeds capacity!
+        let mut ui = AppUi::new(tracks(5), None);
+
+        // Select track 0
+        ui.handle_key(Keycode::Space, &profile);
+        assert_eq!(ui.selected_tracks().len(), 1);
+        assert!(ui.selected[0]);
+
+        // Move to track 1 and select
+        ui.handle_key(Keycode::Down, &profile);
+        ui.handle_key(Keycode::Space, &profile);
+        assert_eq!(ui.selected_tracks().len(), 2);
+        assert!(ui.selected[1]);
+
+        // Move to track 2 and attempt to select - should be blocked
+        ui.handle_key(Keycode::Down, &profile);
+        ui.handle_key(Keycode::Space, &profile);
+        assert_eq!(ui.selected_tracks().len(), 2);
+        assert!(!ui.selected[2]);
+        assert_eq!(ui.current_status(), Some("EXCEEDS CAPACITY (MAX 03:00)"));
+
+        // Deselect track 1
+        ui.handle_key(Keycode::Up, &profile);
+        ui.handle_key(Keycode::Space, &profile);
+        assert_eq!(ui.selected_tracks().len(), 1);
+        assert!(!ui.selected[1]);
+
+        // Now track 2 can be selected
+        ui.handle_key(Keycode::Down, &profile);
+        ui.handle_key(Keycode::Space, &profile);
+        assert_eq!(ui.selected_tracks().len(), 2);
+        assert!(ui.selected[2]);
+    }
+
+    #[test]
+    fn c_shortcut_clears_track_selection() {
+        let profile = RuntimeProfile::default();
+        let mut ui = AppUi::new(tracks(5), None);
+
+        // Select first two tracks
+        ui.handle_key(Keycode::Space, &profile);
+        ui.handle_key(Keycode::Down, &profile);
+        ui.handle_key(Keycode::Space, &profile);
+        assert_eq!(ui.selected_tracks().len(), 2);
+        assert!(ui.selected_panel);
+
+        // Press C to clear selection
+        ui.handle_key(Keycode::C, &profile);
+        assert_eq!(ui.selected_tracks().len(), 0);
+        assert!(!ui.selected[0]);
+        assert!(!ui.selected[1]);
+        assert!(!ui.selected_panel);
+
+        // Pressing C again on empty selection is a safe no-op
+        ui.handle_key(Keycode::C, &profile);
+        assert_eq!(ui.selected_tracks().len(), 0);
+    }
+
+    #[test]
+    fn status_notification_expires_after_timeout() {
+        let mut ui = AppUi::new(tracks(2), None);
+        assert_eq!(ui.current_status(), None);
+
+        ui.set_normalization_status("PROFILE SAVED test.json");
+        assert_eq!(ui.current_status(), Some("PROFILE SAVED test.json"));
+
+        // Simulate time passage past STATUS_TIMEOUT
+        ui.status_updated_at = Some(Instant::now() - Duration::from_secs(4));
+        assert_eq!(ui.current_status(), None);
+
+        // Clear status explicitly
+        ui.set_normalization_status("ANOTHER STATUS");
+        assert_eq!(ui.current_status(), Some("ANOTHER STATUS"));
+        ui.clear_normalization_status();
+        assert_eq!(ui.current_status(), None);
     }
 }
 
@@ -1171,6 +1538,7 @@ fn draw_selected_panel(
     selected: &[bool],
     cursor: usize,
     focus_elapsed: Duration,
+    profile: &RuntimeProfile,
 ) -> Result<(), String> {
     fill(canvas, Rect::new(187, 53, 124, 154), PANEL)?;
     text(canvas, 194, 58, "SELECTED", 1, AMBER)?;
@@ -1184,7 +1552,7 @@ fn draw_selected_panel(
     if selected_tracks.is_empty() {
         text(canvas, 194, 82, "NONE", 1, DIM)?;
     } else {
-        for (index, (source_index, track)) in selected_tracks.iter().take(6).enumerate() {
+        for (index, (source_index, track)) in selected_tracks.iter().take(5).enumerate() {
             let y = 75 + index as i32 * 17;
             let highlighted = *source_index == cursor;
             let name = compact_track_name_scrolling(
@@ -1225,17 +1593,28 @@ fn draw_selected_panel(
             )?;
         }
     }
-    let total_seconds: u32 = selected_tracks
+    let selected_audio: Vec<AudioTrack> = selected_tracks
         .iter()
-        .map(|(_, track)| track.duration_seconds)
-        .sum();
+        .map(|(_, track)| (*track).clone())
+        .collect();
+    let plan = SessionPlan::from_audio_tracks(profile, &selected_audio);
+    let total_seconds = plan.total_seconds();
+    let total_color = if plan.fits() { PHOSPHOR } else { RED };
     text(
         canvas,
         194,
-        184,
+        174,
         &format!("TOTAL {:02}:{:02}", total_seconds / 60, total_seconds % 60),
         1,
-        PHOSPHOR,
+        total_color,
+    )?;
+    text(
+        canvas,
+        194,
+        185,
+        &format!("MAX   {:02}:00", profile.side_duration_minutes),
+        1,
+        DIM,
     )?;
     text(
         canvas,

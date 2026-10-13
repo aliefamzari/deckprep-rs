@@ -1,4 +1,4 @@
-use crate::counter::TapeCounter;
+use crate::{config::RuntimeProfile, counter::TapeCounter, library::AudioTrack};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Track {
@@ -24,7 +24,25 @@ pub struct SessionPlan {
 }
 
 impl SessionPlan {
+    pub fn from_audio_tracks(profile: &RuntimeProfile, tracks: &[AudioTrack]) -> Self {
+        Self {
+            side_capacity_seconds: profile.side_duration_minutes * 60,
+            leader_gap_seconds: profile.leader_gap_seconds,
+            track_gap_seconds: profile.track_gap_seconds,
+            tracks: tracks
+                .iter()
+                .map(|track| Track {
+                    name: track.name.clone(),
+                    duration_seconds: track.duration_seconds,
+                })
+                .collect(),
+        }
+    }
+
     pub fn total_seconds(&self) -> u32 {
+        if self.tracks.is_empty() {
+            return 0;
+        }
         let track_time: u32 = self.tracks.iter().map(|track| track.duration_seconds).sum();
         let gap_count = self.tracks.len().saturating_sub(1) as u32;
         self.leader_gap_seconds + track_time + self.track_gap_seconds * gap_count
@@ -102,5 +120,29 @@ mod tests {
         session.side_capacity_seconds = 400;
         assert!(!session.fits());
         assert_eq!(session.remaining_seconds(), -35);
+    }
+
+    #[test]
+    fn total_seconds_empty_tracks_is_zero() {
+        let mut session = plan();
+        session.tracks.clear();
+        assert_eq!(session.total_seconds(), 0);
+        assert_eq!(session.remaining_seconds(), 1_800);
+        assert!(session.fits());
+    }
+
+    #[test]
+    fn from_audio_tracks_creates_matching_plan() {
+        let profile = RuntimeProfile::default();
+        let audio_tracks = vec![AudioTrack {
+            path: std::path::PathBuf::from("a.wav"),
+            name: "a.wav".to_owned(),
+            duration_seconds: 120,
+            codec: "pcm_s16le".to_owned(),
+        }];
+        let session = SessionPlan::from_audio_tracks(&profile, &audio_tracks);
+        assert_eq!(session.side_capacity_seconds, 1_800);
+        assert_eq!(session.tracks.len(), 1);
+        assert_eq!(session.total_seconds(), 130);
     }
 }

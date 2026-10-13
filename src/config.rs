@@ -102,6 +102,32 @@ fn default_counter_rate() -> f64 {
     1.0
 }
 
+impl Default for RuntimeProfile {
+    fn default() -> Self {
+        Self {
+            name: "desktop-dev".to_owned(),
+            display_backend: DisplayBackend::DesktopWindow,
+            logical_width: PVM_WIDTH,
+            logical_height: PVM_HEIGHT,
+            window_scale: 3,
+            fullscreen: false,
+            keyboard_enabled: true,
+            audio_backend: "sdl".to_owned(),
+            audio_device: "default".to_owned(),
+            tracks_folder: "tracks".to_owned(),
+            normalization: NormalizationMethod::default(),
+            target_lufs: default_target_lufs(),
+            normalized_folder: default_normalized_folder(),
+            side_duration_minutes: default_side_duration_minutes(),
+            leader_gap_seconds: default_leader_gap_seconds(),
+            track_gap_seconds: default_track_gap_seconds(),
+            counter_mode: CounterMode::default(),
+            counter_rate: default_counter_rate(),
+            counter_config: None,
+        }
+    }
+}
+
 impl RuntimeProfile {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref();
@@ -184,27 +210,7 @@ mod tests {
     use super::*;
 
     fn valid_profile() -> RuntimeProfile {
-        RuntimeProfile {
-            name: "desktop-dev".to_owned(),
-            display_backend: DisplayBackend::DesktopWindow,
-            logical_width: PVM_WIDTH,
-            logical_height: PVM_HEIGHT,
-            window_scale: 3,
-            fullscreen: false,
-            keyboard_enabled: true,
-            audio_backend: "sdl".to_owned(),
-            audio_device: "default".to_owned(),
-            tracks_folder: "tracks".to_owned(),
-            normalization: NormalizationMethod::default(),
-            target_lufs: -14.0,
-            normalized_folder: "normalized".to_owned(),
-            side_duration_minutes: 30,
-            leader_gap_seconds: 10,
-            track_gap_seconds: 5,
-            counter_mode: CounterMode::default(),
-            counter_rate: 1.0,
-            counter_config: None,
-        }
+        RuntimeProfile::default()
     }
 
     #[test]

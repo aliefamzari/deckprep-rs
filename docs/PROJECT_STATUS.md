@@ -20,7 +20,8 @@ The original Python implementation remains the behavioral reference in the sibli
 - Desktop development profile for WSL2/WSLg.
 - Keyboard track navigation with Up/Down, J/K, Page Up/Down, Home, and End.
 - Track selection and deselection with Space, and clear selection with C.
-- Dynamic six-row track viewport with auto-scroll and scrollbar.
+- Dynamic seven-row track viewport with auto-scroll and scrollbar.
+- Consolidated header displaying active profile and DAC device, eliminating redundant resolution text and sub-bar to maximize vertical screen space for tracks and meters.
 - Long-title marquee for the highlighted track.
 - Dedicated track/queue workspace opened with Tab or V.
 - Queue workspace with library and selected queue columns, synchronized highlighting, fixed title/duration columns, capacity totals, and queue scrolling.
@@ -32,6 +33,8 @@ The original Python implementation remains the behavioral reference in the sibli
 
 - FFprobe-backed discovery for MP3, WAV, FLAC, WebM, M4A, AAC, and OGG.
 - FFplay preview with P play/pause, X stop, and H/L or Left/Right seek by 10 seconds.
+- Built-in calibration test-tone generator with keys 1-5 (400 Hz level calibration, 1 kHz reference, 10 kHz bias, 15 kHz azimuth, and 20 Hz-20 kHz logarithmic sweep).
+- Command-line audio diagnostics via `--audio-diagnostics [profile.json]` to inspect FFplay/FFmpeg binaries, report ALSA cards from `/proc/asound/cards`, and recommend device strings for USB DACs like the iBasso D-Zero.
 - Preview does not change automatically while navigating; P explicitly previews the highlighted track.
 - Preview uses normalized cached WAV output.
 - Stereo RMS analysis with 50 ms windows for main-screen and recording-mode meters.
@@ -43,7 +46,7 @@ The four intended stages are implemented:
 1. Main menu and track selection.
 2. Dedicated normalization review with durations, cache status, totals, capacity, queue navigation, and preview controls.
 3. Cancellable preparation countdown and leader gap.
-4. Dedicated recording mode with current track, queue, progress, configured counter, and stereo VU levels.
+4. Dedicated recording mode with current track, queue, progress, configured counter, detailed animated cassette shell with dynamic tape pack transfer, shimmering specular light reflection with glinting winding texture and rotation-phased undulation, rotating splined reel hubs with punch-hole cutouts, spinning corner roller guides with authentic diagonal/horizontal tape path routing, and tricolor stereo VU level meters with decibel scale labels.
 
 Additional workflow features:
 
@@ -65,13 +68,15 @@ Additional workflow features:
   ```
 
 - In-app profile editor opened with W.
+- Visual badges for text fields (`[TXT]`) and predefined options (`[OPT]`), with dynamic instruction header and `< value >` brackets.
 - Numeric/enum profile editing with Left/Right.
-- Text editing for profile name, track paths, normalized folder, audio device, and calibration file.
+- Text editing with cursor indicator and case-sensitive rendering for profile name, tracks folder, normalized folder, audio device, and calibration path.
+- Profile browser opened with L to browse and dynamically load profiles from `profiles/`.
 - Ctrl+S saves profile-editor changes; S saves an active profile snapshot outside the editor.
 - Queue save dialog with typed queue names.
-- Ctrl+S saves a named queue under `queues/`.
-- Ctrl+O opens a queue browser; users choose a named queue, and missing tracks are reported.
-- Queue selection order is preserved when loading and used for the prep session.
+- Ctrl+S saves a named queue under `queues/` with duplicate name overwrite confirmation (`Enter`) or auto-versioning (`V`).
+- Ctrl+O opens a queue browser; users choose a named queue, and missing tracks are reported with automatic filename-based path relocation fallback.
+- Queue selection order and repeated/duplicate tracks are preserved when loading and used for the prep session.
 
 Local media and generated queue files are ignored by Git. Audio must be supplied locally in `tracks/` or via the profile's `tracks_folder`.
 
@@ -81,7 +86,7 @@ The project currently passes:
 
 - `cargo fmt --check`
 - `cargo check`
-- `cargo test` with 26 tests
+- `cargo test` with 43 tests
 - Desktop SDL GUI startup smoke test under WSLg
 - Temporary WAV tests for FFprobe scanning, FFplay playback, FFmpeg normalization/cache reuse, meter analysis, and tracklist generation
 
@@ -89,30 +94,16 @@ The test environment does not validate actual Pi display takeover, GPIO timings,
 
 ## Next work, in priority order
 
-### 1. Fix workflow hardening
-
-- Add overwrite confirmation/versioning when saving an existing queue name.
-- Handle duplicate filenames/paths robustly when loading queues.
-- Add stronger recovery when FFmpeg, FFplay, or a recording session is interrupted.
-- Separate preparation, playback, and cancellation state from the main event loop.
-- Add regression tests for UI state transitions and queue load/save behavior.
-
-### 2. Finish audio hardware behavior
-
-- Select and test the ALSA device string for the iBasso D-Zero on Raspberry Pi OS.
-- Add test-tone generation for 400 Hz, 1 kHz, 10 kHz, 15 kHz, and sweep signals.
-- Verify output latency and VU synchronization on the physical DAC.
-- Add user-facing audio-device diagnostics.
-
-### 3. Raspberry Pi deployment
+### 1. Raspberry Pi deployment
 
 - Produce a Raspberry Pi 4 release build, preferably for 64-bit Raspberry Pi OS Lite.
 - Make the KMS/DRM backend explicit for the Pi production profile.
 - Validate fullscreen display ownership through `/dev/dri` on a normal HDMI monitor first.
 - Add a systemd service, permissions for DRM/input/audio devices, clean shutdown, and logging.
+- Verify output latency and VU synchronization with the physical iBasso D-Zero DAC on Raspberry Pi OS.
 - Keep GPIO RGBS/SCART disabled until the exact adapter/pinout is confirmed.
 
-### 4. CRT output
+### 2. CRT output
 
 - Confirm the GPIO-to-SCART interface hardware and pinout.
 - Validate RGB bit depth, sync polarity, blanking/switching voltages, and signal levels.

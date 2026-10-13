@@ -6,6 +6,8 @@ pub mod meter;
 pub mod normalize;
 pub mod profile_wizard;
 pub mod queue;
+pub mod session;
 pub mod timing;
+pub mod tone;
 pub mod tracklist;
 pub mod ui;

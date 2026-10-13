@@ -4,33 +4,43 @@ use std::{
     time::{Duration, Instant},
 };
 
-use deckprep_rs::audio::AudioPlayer;
+use deckprep_rs::audio::{AudioPlayer, diagnose_audio};
 use deckprep_rs::library::scan_tracks;
 use deckprep_rs::meter::StereoMeter;
+use deckprep_rs::normalize::{NormalizationSettings, clean_stale_cache_files, normalize_track};
 use deckprep_rs::queue::{list_queues, load_queue, save_queue_named};
+use deckprep_rs::session::{PrepSession, SessionTickResult};
+use deckprep_rs::tone::{TestTone, generate_test_tone};
 use deckprep_rs::ui::{
-    AppUi, LegendContext, NormalizationReview, ProfileEditor, QueueBrowser, QueueNameEditor,
-    render_legend,
+    AppUi, LegendContext, NormalizationReview, ProfileBrowser, ProfileEditor, QueueBrowser,
+    QueueNameEditor, render_legend,
 };
 use deckprep_rs::{
     config::{NormalizationMethod, RuntimeProfile},
-    counter::TapeCounter,
-    normalize::{NormalizationSettings, normalize_track},
     timing::SessionPlan,
-    tracklist::write_tracklist,
 };
 use sdl2::{
-    EventPump,
     event::Event,
     keyboard::{Keycode, Mod},
-    render::Canvas,
-    video::Window,
 };
 
 fn main() -> Result<(), String> {
     let profile_path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "profiles/desktop-dev.json".to_owned());
+    if profile_path == "--audio-diagnostics" {
+        let target_profile = std::env::args()
+            .nth(2)
+            .unwrap_or_else(|| "profiles/desktop-dev.json".to_owned());
+        let (backend, device) = if let Ok(prof) = RuntimeProfile::load(&target_profile) {
+            (prof.audio_backend, prof.audio_device)
+        } else {
+            ("sdl".to_owned(), "default".to_owned())
+        };
+        let diag = diagnose_audio(&backend, &device);
+        println!("{}", diag.report());
+        return Ok(());
+    }
     if profile_path == "--create-profile" {
         let output = std::env::args().nth(2).ok_or_else(|| {
             "usage: cargo run -- --create-profile profiles/my-deck.json".to_owned()
@@ -38,6 +48,8 @@ fn main() -> Result<(), String> {
         return deckprep_rs::profile_wizard::run(output);
     }
     let mut profile = RuntimeProfile::load(&profile_path)?;
+    let output_folder = Path::new(&profile.tracks_folder).join(&profile.normalized_folder);
+    let _ = clean_stale_cache_files(&output_folder);
     let (tracks, library_error) = match scan_tracks(&profile.tracks_folder) {
         Ok(tracks) => (tracks, None),
         Err(error) => (Vec::new(), Some(error)),
@@ -75,7 +87,9 @@ fn main() -> Result<(), String> {
     let mut editor: Option<ProfileEditor> = None;
     let mut queue_editor: Option<QueueNameEditor> = None;
     let mut queue_browser: Option<QueueBrowser> = None;
+    let mut profile_browser: Option<ProfileBrowser> = None;
     let mut review: Option<NormalizationReview> = None;
+    let mut prep_session: Option<PrepSession> = None;
     let mut legend: Option<LegendContext> = None;
 
     'running: loop {
@@ -92,21 +106,59 @@ fn main() -> Result<(), String> {
                 }
                 Event::Quit { .. } => break 'running,
                 Event::KeyDown {
-                    keycode: Some(Keycode::Escape | Keycode::Q),
+                    keycode: Some(Keycode::Escape),
                     ..
                 } => {
                     if legend.is_some() {
                         legend = None;
+                    } else if let Some(mut session) = prep_session.take() {
+                        let was_complete = session.is_complete();
+                        session.cancel(&mut player);
+                        ui.set_previewing(false, false);
+                        if !was_complete {
+                            ui.set_normalization_status("PREP CANCELLED");
+                        }
                     } else if editor.is_some() {
                         editor = None;
                     } else if queue_editor.is_some() {
                         queue_editor = None;
                     } else if queue_browser.is_some() {
                         queue_browser = None;
+                    } else if profile_browser.is_some() {
+                        profile_browser = None;
                     } else if review.is_some() {
                         review = None;
                     } else if ui.current_status().is_some() {
                         ui.clear_normalization_status();
+                    } else {
+                        break 'running;
+                    }
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Q),
+                    ..
+                } if queue_editor.is_none()
+                    && editor
+                        .as_ref()
+                        .map_or(true, |active| !active.is_text_field()) =>
+                {
+                    if legend.is_some() {
+                        legend = None;
+                    } else if let Some(mut session) = prep_session.take() {
+                        let was_complete = session.is_complete();
+                        session.cancel(&mut player);
+                        ui.set_previewing(false, false);
+                        if !was_complete {
+                            ui.set_normalization_status("PREP CANCELLED");
+                        }
+                    } else if editor.is_some() {
+                        editor = None;
+                    } else if queue_browser.is_some() {
+                        queue_browser = None;
+                    } else if profile_browser.is_some() {
+                        profile_browser = None;
+                    } else if review.is_some() {
+                        review = None;
                     } else {
                         break 'running;
                     }
@@ -117,6 +169,13 @@ fn main() -> Result<(), String> {
                     repeat: false,
                     ..
                 } => {
+                    if let Some(session) = prep_session.as_mut() {
+                        if key == Keycode::Return && session.is_complete() {
+                            prep_session = None;
+                            ui.set_previewing(false, false);
+                        }
+                        continue;
+                    }
                     let help_key =
                         key == Keycode::Slash && keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
                     if help_key {
@@ -134,6 +193,47 @@ fn main() -> Result<(), String> {
                         continue;
                     }
                     if legend.is_some() {
+                        continue;
+                    }
+                    if let Some(browser) = profile_browser.as_mut() {
+                        if let Some(accept) = browser.handle_key(key) {
+                            if accept {
+                                if let Some(path) = browser.selected_path().map(Path::to_path_buf) {
+                                    match RuntimeProfile::load(&path) {
+                                        Ok(new_profile) => {
+                                            let folder_changed =
+                                                new_profile.tracks_folder != profile.tracks_folder;
+                                            let audio_changed = new_profile.audio_backend
+                                                != profile.audio_backend
+                                                || new_profile.audio_device != profile.audio_device;
+                                            profile = new_profile;
+                                            if audio_changed {
+                                                player = AudioPlayer::new(
+                                                    &profile.audio_backend,
+                                                    &profile.audio_device,
+                                                );
+                                            }
+                                            if folder_changed {
+                                                let (new_tracks, new_error) =
+                                                    match scan_tracks(&profile.tracks_folder) {
+                                                        Ok(tracks) => (tracks, None),
+                                                        Err(error) => (Vec::new(), Some(error)),
+                                                    };
+                                                ui.reset_library(new_tracks, new_error);
+                                            }
+                                            ui.set_normalization_status(format!(
+                                                "PROFILE LOADED {}",
+                                                path.file_name()
+                                                    .and_then(|name| name.to_str())
+                                                    .unwrap_or("PROFILE.JSON")
+                                            ));
+                                        }
+                                        Err(error) => ui.set_normalization_status(error),
+                                    }
+                                }
+                            }
+                            profile_browser = None;
+                        }
                         continue;
                     }
                     if let Some(browser) = queue_browser.as_mut() {
@@ -182,7 +282,9 @@ fn main() -> Result<(), String> {
                                 ) {
                                     Ok(path) => ui.set_normalization_status(format!(
                                         "QUEUE SAVED {}",
-                                        path.display()
+                                        path.file_name()
+                                            .and_then(|name| name.to_str())
+                                            .unwrap_or("QUEUE.JSON")
                                     )),
                                     Err(error) => ui.set_normalization_status(error),
                                 }
@@ -245,6 +347,46 @@ fn main() -> Result<(), String> {
                                 review = None;
                                 start_reviewed_prep = true;
                             }
+                            Keycode::Num1 | Keycode::Kp1 => play_test_tone_preview(
+                                TestTone::Hz400,
+                                &mut player,
+                                &mut preview_meter,
+                                &mut ui,
+                                &mut review,
+                                &profile,
+                            )?,
+                            Keycode::Num2 | Keycode::Kp2 => play_test_tone_preview(
+                                TestTone::Hz1000,
+                                &mut player,
+                                &mut preview_meter,
+                                &mut ui,
+                                &mut review,
+                                &profile,
+                            )?,
+                            Keycode::Num3 | Keycode::Kp3 => play_test_tone_preview(
+                                TestTone::Hz10000,
+                                &mut player,
+                                &mut preview_meter,
+                                &mut ui,
+                                &mut review,
+                                &profile,
+                            )?,
+                            Keycode::Num4 | Keycode::Kp4 => play_test_tone_preview(
+                                TestTone::Hz15000,
+                                &mut player,
+                                &mut preview_meter,
+                                &mut ui,
+                                &mut review,
+                                &profile,
+                            )?,
+                            Keycode::Num5 | Keycode::Kp5 => play_test_tone_preview(
+                                TestTone::Sweep,
+                                &mut player,
+                                &mut preview_meter,
+                                &mut ui,
+                                &mut review,
+                                &profile,
+                            )?,
                             Keycode::Escape | Keycode::Q => review = None,
                             _ => {}
                         }
@@ -273,7 +415,7 @@ fn main() -> Result<(), String> {
                             if ui.selected_tracks().is_empty() {
                                 ui.set_normalization_status("QUEUE EMPTY");
                             } else {
-                                queue_editor = Some(QueueNameEditor::new());
+                                queue_editor = Some(QueueNameEditor::new("queues"));
                             }
                         }
                         Keycode::O if keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD) => {
@@ -285,6 +427,13 @@ fn main() -> Result<(), String> {
                                 Err(error) => ui.set_normalization_status(error),
                             }
                         }
+                        Keycode::L => match RuntimeProfile::list_profiles("profiles") {
+                            Ok(paths) if paths.is_empty() => {
+                                ui.set_normalization_status("NO SAVED PROFILES")
+                            }
+                            Ok(paths) => profile_browser = Some(ProfileBrowser::new(paths)),
+                            Err(error) => ui.set_normalization_status(error),
+                        },
                         Keycode::P => {
                             if let Some(track) = ui.current_track().cloned() {
                                 ui.set_selected_panel(false);
@@ -302,12 +451,12 @@ fn main() -> Result<(), String> {
                             player.stop()?;
                             preview_meter = None;
                         }
-                        Keycode::Left | Keycode::H => {
+                        Keycode::Left => {
                             if let Some(track) = ui.current_track() {
                                 player.seek_by(-10.0, track.duration_seconds)?;
                             }
                         }
-                        Keycode::Right | Keycode::L => {
+                        Keycode::Right => {
                             if let Some(track) = ui.current_track() {
                                 player.seek_by(10.0, track.duration_seconds)?;
                             }
@@ -322,6 +471,46 @@ fn main() -> Result<(), String> {
                                     .unwrap_or("PROFILE.JSON")
                             ));
                         }
+                        Keycode::Num1 | Keycode::Kp1 => play_test_tone_preview(
+                            TestTone::Hz400,
+                            &mut player,
+                            &mut preview_meter,
+                            &mut ui,
+                            &mut review,
+                            &profile,
+                        )?,
+                        Keycode::Num2 | Keycode::Kp2 => play_test_tone_preview(
+                            TestTone::Hz1000,
+                            &mut player,
+                            &mut preview_meter,
+                            &mut ui,
+                            &mut review,
+                            &profile,
+                        )?,
+                        Keycode::Num3 | Keycode::Kp3 => play_test_tone_preview(
+                            TestTone::Hz10000,
+                            &mut player,
+                            &mut preview_meter,
+                            &mut ui,
+                            &mut review,
+                            &profile,
+                        )?,
+                        Keycode::Num4 | Keycode::Kp4 => play_test_tone_preview(
+                            TestTone::Hz15000,
+                            &mut player,
+                            &mut preview_meter,
+                            &mut ui,
+                            &mut review,
+                            &profile,
+                        )?,
+                        Keycode::Num5 | Keycode::Kp5 => play_test_tone_preview(
+                            TestTone::Sweep,
+                            &mut player,
+                            &mut preview_meter,
+                            &mut ui,
+                            &mut review,
+                            &profile,
+                        )?,
                         Keycode::C if keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD) => {}
                         _ => {
                             ui.handle_key(key, &profile);
@@ -334,24 +523,74 @@ fn main() -> Result<(), String> {
         }
 
         if start_reviewed_prep {
-            run_prep_session(&mut canvas, &mut events, &mut ui, &mut player, &profile)?;
+            review = None;
+            match PrepSession::start(&ui.selected_tracks(), &profile) {
+                Ok(session) => {
+                    ui.set_normalization_status(format!(
+                        "TRACKLIST {}",
+                        session
+                            .tracklist_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("WRITTEN")
+                    ));
+                    prep_session = Some(session);
+                }
+                Err(error) => ui.set_normalization_status(error),
+            }
         } else if start_prep {
             if review.is_none() {
                 review = build_normalization_review(&mut ui, &profile)?;
             } else {
-                run_prep_session(&mut canvas, &mut events, &mut ui, &mut player, &profile)?;
+                review = None;
+                match PrepSession::start(&ui.selected_tracks(), &profile) {
+                    Ok(session) => {
+                        ui.set_normalization_status(format!(
+                            "TRACKLIST {}",
+                            session
+                                .tracklist_path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("WRITTEN")
+                        ));
+                        prep_session = Some(session);
+                    }
+                    Err(error) => ui.set_normalization_status(error),
+                }
             }
         }
 
-        player.refresh()?;
-        if player.current_path().is_none() {
-            preview_meter = None;
+        if let Some(session) = prep_session.as_mut() {
+            match session.tick(&mut player, &profile) {
+                Ok(SessionTickResult::Continuing) => {
+                    ui.set_previewing(player.current_path().is_some(), player.is_paused());
+                }
+                Ok(SessionTickResult::Complete) => {
+                    ui.set_previewing(false, false);
+                    ui.set_normalization_status("PREP COMPLETE");
+                }
+                Err(error) => {
+                    session.cancel(&mut player);
+                    ui.set_normalization_status(format!("PREP ERROR: {error}"));
+                    prep_session = None;
+                }
+            }
+        } else {
+            player.refresh()?;
+            if player.current_path().is_none() {
+                preview_meter = None;
+            }
+            ui.set_previewing(player.current_path().is_some(), player.is_paused());
         }
-        ui.set_previewing(player.current_path().is_some(), player.is_paused());
+
         let meter_levels = preview_meter
             .as_ref()
             .map(|meter| meter.level_at(player.position_seconds()));
-        if let Some(browser) = queue_browser.as_ref() {
+        if let Some(session) = prep_session.as_ref() {
+            session.render(&mut canvas, &ui, &profile, &player)?;
+        } else if let Some(browser) = profile_browser.as_ref() {
+            browser.render(&mut canvas)?;
+        } else if let Some(browser) = queue_browser.as_ref() {
             browser.render(&mut canvas)?;
         } else if let Some(active_queue_editor) = queue_editor.as_ref() {
             active_queue_editor.render(&mut canvas)?;
@@ -448,218 +687,6 @@ fn build_normalization_review(
     }))
 }
 
-fn run_prep_session(
-    canvas: &mut Canvas<Window>,
-    events: &mut EventPump,
-    ui: &mut AppUi,
-    player: &mut AudioPlayer,
-    profile: &RuntimeProfile,
-) -> Result<(), String> {
-    let selected = ui.selected_tracks();
-    if selected.is_empty() {
-        ui.set_normalization_status("PREP BLOCKED: SELECT TRACKS");
-        return Ok(());
-    }
-
-    let plan = SessionPlan::from_audio_tracks(profile, &selected);
-    if !plan.fits() {
-        ui.set_normalization_status(format!(
-            "PREP BLOCKED: OVER CAPACITY BY {}S",
-            -plan.remaining_seconds()
-        ));
-        return Ok(());
-    }
-
-    let track_names: Vec<String> = selected.iter().map(|track| track.name.clone()).collect();
-    let total_seconds = plan.total_seconds();
-    let counter = TapeCounter::from_profile(profile)?;
-    player.stop()?;
-    let output_folder = Path::new(&profile.tracks_folder).join(&profile.normalized_folder);
-    let settings = NormalizationSettings {
-        method: profile.normalization,
-        target_lufs: profile.target_lufs,
-    };
-    let mut normalized = Vec::with_capacity(selected.len());
-    for track in &selected {
-        normalized.push(normalize_track(track, &output_folder, settings)?);
-    }
-    let session_meters: Vec<StereoMeter> = normalized
-        .iter()
-        .map(|track| StereoMeter::analyze(&track.path))
-        .collect::<Result<_, _>>()?;
-    let tracklist_path = write_tracklist(
-        &plan,
-        &counter,
-        &profile.tracks_folder,
-        match profile.normalization {
-            NormalizationMethod::Peak => "PEAK",
-            NormalizationMethod::Lufs => "LUFS",
-        },
-        profile.target_lufs,
-    )?;
-    if !wait_phase(
-        canvas,
-        events,
-        ui,
-        profile,
-        Duration::from_secs(10),
-        "PREP",
-        &track_names,
-        total_seconds,
-        None,
-        None,
-        &counter,
-    )? {
-        return Ok(());
-    }
-    let session_start = Instant::now();
-    if !wait_phase(
-        canvas,
-        events,
-        ui,
-        profile,
-        Duration::from_secs(u64::from(profile.leader_gap_seconds)),
-        "LEADER GAP",
-        &track_names,
-        total_seconds,
-        Some(session_start),
-        None,
-        &counter,
-    )? {
-        return Ok(());
-    }
-    ui.set_normalization_status(format!(
-        "TRACKLIST {}",
-        tracklist_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("WRITTEN")
-    ));
-
-    for (index, track) in normalized.iter().enumerate() {
-        if cancelled(events) {
-            player.stop()?;
-            ui.set_normalization_status("PREP CANCELLED");
-            return Ok(());
-        }
-        player.play(&track.path)?;
-        while player.current_path().is_some() {
-            if cancelled(events) {
-                player.stop()?;
-                ui.set_normalization_status("PREP CANCELLED");
-                return Ok(());
-            }
-            player.refresh()?;
-            ui.set_previewing(player.current_path().is_some(), player.is_paused());
-            ui.render_recording(
-                canvas,
-                profile,
-                &format!("RECORDING {}/{}", index + 1, normalized.len()),
-                &track_names,
-                Some(index),
-                session_start.elapsed().as_secs() as u32,
-                total_seconds,
-                counter.calculate(session_start.elapsed().as_secs_f64()),
-                session_meters[index].level_at(player.position_seconds()),
-                session_start.elapsed(),
-                true,
-            )?;
-            canvas.present();
-            thread::sleep(Duration::from_millis(50));
-        }
-        if index + 1 < normalized.len()
-            && !wait_phase(
-                canvas,
-                events,
-                ui,
-                profile,
-                Duration::from_secs(u64::from(profile.track_gap_seconds)),
-                "TRACK GAP",
-                &track_names,
-                total_seconds,
-                Some(session_start),
-                None,
-                &counter,
-            )?
-        {
-            return Ok(());
-        }
-    }
-
-    ui.set_previewing(false, false);
-    ui.set_normalization_status("PREP COMPLETE");
-    ui.render_recording(
-        canvas,
-        profile,
-        "PREP COMPLETE",
-        &track_names,
-        None,
-        total_seconds,
-        total_seconds,
-        counter.calculate(f64::from(total_seconds)),
-        (0, 0),
-        session_start.elapsed(),
-        false,
-    )?;
-    canvas.present();
-    Ok(())
-}
-
-fn wait_phase(
-    canvas: &mut Canvas<Window>,
-    events: &mut EventPump,
-    ui: &mut AppUi,
-    profile: &RuntimeProfile,
-    duration: Duration,
-    label: &str,
-    track_names: &[String],
-    total_seconds: u32,
-    timeline_start: Option<Instant>,
-    current_track: Option<usize>,
-    counter: &TapeCounter,
-) -> Result<bool, String> {
-    let deadline = Instant::now() + duration;
-    while Instant::now() < deadline {
-        if cancelled(events) {
-            ui.set_normalization_status("PREP CANCELLED");
-            return Ok(false);
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now()).as_secs() + 1;
-        let elapsed = timeline_start
-            .map(|start| start.elapsed())
-            .unwrap_or(Duration::ZERO);
-        ui.render_recording(
-            canvas,
-            profile,
-            &format!("{label} {remaining:02}S - Q CANCEL"),
-            track_names,
-            current_track,
-            elapsed.as_secs() as u32,
-            total_seconds,
-            counter.calculate(elapsed.as_secs_f64()),
-            (0, 0),
-            elapsed,
-            timeline_start.is_some(),
-        )?;
-        canvas.present();
-        thread::sleep(Duration::from_millis(50));
-    }
-    Ok(true)
-}
-
-fn cancelled(events: &mut EventPump) -> bool {
-    events.poll_iter().any(|event| {
-        matches!(
-            event,
-            Event::Quit { .. }
-                | Event::KeyDown {
-                    keycode: Some(Keycode::Q | Keycode::Escape),
-                    ..
-                }
-        )
-    })
-}
-
 fn normalized_playback_path(
     track: &deckprep_rs::library::AudioTrack,
     profile: &RuntimeProfile,
@@ -670,4 +697,30 @@ fn normalized_playback_path(
         target_lufs: profile.target_lufs,
     };
     Ok(normalize_track(track, output_folder, settings)?.path)
+}
+
+fn play_test_tone_preview(
+    tone: TestTone,
+    player: &mut AudioPlayer,
+    preview_meter: &mut Option<StereoMeter>,
+    ui: &mut AppUi,
+    review: &mut Option<NormalizationReview>,
+    profile: &RuntimeProfile,
+) -> Result<(), String> {
+    let output_folder = Path::new(&profile.tracks_folder)
+        .join(&profile.normalized_folder)
+        .join("tones");
+    let tone_path = generate_test_tone(tone, &output_folder)?;
+    if player.current_path() == Some(tone_path.as_path()) {
+        player.toggle(&tone_path)?;
+    } else {
+        player.play(&tone_path)?;
+    }
+    *preview_meter = Some(StereoMeter::analyze(&tone_path)?);
+    let label = format!("TONE {}", tone.label());
+    ui.set_normalization_status(format!("TEST {}", label));
+    if let Some(active_review) = review.as_mut() {
+        active_review.preview_status = label;
+    }
+    Ok(())
 }

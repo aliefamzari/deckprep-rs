@@ -24,6 +24,27 @@ pub struct NormalizedTrack {
     pub cache_hit: bool,
 }
 
+pub fn clean_stale_cache_files(output_folder: impl AsRef<Path>) -> Result<usize, String> {
+    let folder = output_folder.as_ref();
+    if !folder.exists() {
+        return Ok(0);
+    }
+    let mut removed = 0;
+    let entries = fs::read_dir(folder)
+        .map_err(|error| format!("failed to read cache folder {}: {error}", folder.display()))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+            if file_name.starts_with('.') && file_name.ends_with(".tmp.wav") {
+                if fs::remove_file(&path).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+    Ok(removed)
+}
+
 pub fn normalize_track(
     track: &AudioTrack,
     output_folder: impl AsRef<Path>,
@@ -231,5 +252,37 @@ mod tests {
         assert!(second.cache_hit);
         assert_eq!(first.path, second.path);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cleans_stale_temporary_cache_files() {
+        let folder = std::env::temp_dir().join(format!(
+            "deckprep-stale-test-{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&folder).unwrap();
+
+        // Create a normal cached wav and two interrupted temporary files
+        let normal = folder.join("hash123.wav");
+        let stale1 = folder.join(".hash456.tmp.wav");
+        let stale2 = folder.join(".hash789.tmp.wav");
+        let unrelated = folder.join("notes.txt");
+
+        fs::write(&normal, b"cached audio").unwrap();
+        fs::write(&stale1, b"interrupted").unwrap();
+        fs::write(&stale2, b"interrupted").unwrap();
+        fs::write(&unrelated, b"do not delete").unwrap();
+
+        let removed = clean_stale_cache_files(&folder).unwrap();
+        assert_eq!(removed, 2);
+        assert!(!stale1.exists());
+        assert!(!stale2.exists());
+        assert!(normal.exists());
+        assert!(unrelated.exists());
+
+        fs::remove_dir_all(folder).unwrap();
     }
 }

@@ -31,6 +31,12 @@ Create a reusable profile interactively:
 cargo run -- --create-profile profiles/my-deck.json
 ```
 
+Inspect and diagnose audio hardware, ALSA sound cards, and USB DACs:
+
+```bash
+cargo run -- --audio-diagnostics profiles/pi-production.json
+```
+
 Place MP3, WAV, FLAC, WebM, M4A, AAC, or OGG files in `tracks/`, or change
 `tracks_folder` in the selected runtime profile.
 
@@ -40,6 +46,7 @@ Controls:
 - `Page Up`/`Page Down`, `Home`/`End`: move through long libraries
 - `Space`: select or deselect
 - `C`: clear all selected tracks
+- `1` / `2` / `3` / `4` / `5`: play calibration test tones (400 Hz level, 1 kHz ref, 10 kHz bias, 15 kHz azimuth, 20 Hz-20 kHz sweep)
 - `P`: play or pause the highlighted track; navigation does not change playback
 - `Tab`/`V`: open the dedicated track/queue workspace
 - `Left`/`Right` or `H`/`L`: seek backward/forward 10 seconds
@@ -47,6 +54,7 @@ Controls:
 - `N`: normalize all selected tracks into the configured cache folder
 - `Ctrl+S`: save the selected queue under `queues/`
 - `Ctrl+O`: browse saved queues; use `Up`/`Down` and `Enter` to load
+- `L`: browse and load deck profiles from `profiles/`; dynamically updates settings, tracks, and audio backend
 - `S`: save the active runtime settings as a reusable profile snapshot
 - `W`: open the in-app profile editor; `Ctrl+S` saves changes and `Escape` closes it
 - `Enter`: validate, normalize, countdown, and start the prep session

@@ -185,3 +185,165 @@ impl Drop for AudioPlayer {
         let _ = self.stop();
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioDiagnostics {
+    pub backend: String,
+    pub device: String,
+    pub ffplay_available: bool,
+    pub ffplay_version: Option<String>,
+    pub ffmpeg_available: bool,
+    pub ffmpeg_version: Option<String>,
+    pub alsa_cards: Vec<String>,
+    pub recommended_devices: Vec<String>,
+}
+
+impl AudioDiagnostics {
+    pub fn report(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push("=== DECKPREP AUDIO HARDWARE DIAGNOSTICS ===".to_owned());
+        lines.push(format!("Configured Audio Backend: {}", self.backend));
+        lines.push(format!("Configured Audio Device:  {}", self.device));
+        lines.push(format!(
+            "FFplay binary:            {}",
+            if self.ffplay_available {
+                self.ffplay_version.as_deref().unwrap_or("Available")
+            } else {
+                "NOT FOUND (install ffmpeg/ffplay)"
+            }
+        ));
+        lines.push(format!(
+            "FFmpeg binary:            {}",
+            if self.ffmpeg_available {
+                self.ffmpeg_version.as_deref().unwrap_or("Available")
+            } else {
+                "NOT FOUND (install ffmpeg)"
+            }
+        ));
+
+        if !self.alsa_cards.is_empty() {
+            lines.push(String::new());
+            lines.push("Detected ALSA Sound Cards:".to_owned());
+            for card in &self.alsa_cards {
+                lines.push(format!("  • {card}"));
+            }
+        }
+
+        if !self.recommended_devices.is_empty() {
+            lines.push(String::new());
+            lines.push("Recommended ALSA Device Strings for Profile:".to_owned());
+            for rec in &self.recommended_devices {
+                lines.push(format!("  • {rec}"));
+            }
+        } else if self.backend == "alsa" {
+            lines.push(String::new());
+            lines.push(
+                "Notice: For iBasso D-Zero on Raspberry Pi, common ALSA devices are:".to_owned(),
+            );
+            lines.push(
+                "  • plughw:CARD=DZero,DEV=0 (recommended with auto format conversion)".to_owned(),
+            );
+            lines.push("  • hw:CARD=DZero,DEV=0     (direct hardware bit-exact access)".to_owned());
+        }
+
+        lines.join("\n")
+    }
+}
+
+pub fn parse_alsa_cards(contents: &str) -> (Vec<String>, Vec<String>) {
+    let mut cards = Vec::new();
+    let mut recommended = Vec::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((idx_part, rest)) = trimmed.split_once('[') {
+            if let Some((card_id, desc)) = rest.split_once(']') {
+                let card_id = card_id.trim();
+                let desc = desc.trim_start_matches(':').trim();
+                let full = format!("Card {} [{}]: {}", idx_part.trim(), card_id, desc);
+                cards.push(full);
+                if card_id.eq_ignore_ascii_case("dzero")
+                    || desc.to_ascii_lowercase().contains("ibasso")
+                    || desc.to_ascii_lowercase().contains("usb")
+                {
+                    recommended.push(format!("plughw:CARD={card_id},DEV=0 (Plug ALSA wrapper)"));
+                    recommended.push(format!("hw:CARD={card_id},DEV=0 (Direct hardware)"));
+                }
+            }
+        }
+    }
+    (cards, recommended)
+}
+
+pub fn diagnose_audio(backend: &str, device: &str) -> AudioDiagnostics {
+    let ffplay_cmd = Command::new("ffplay").arg("-version").output().ok();
+    let ffplay_available = ffplay_cmd
+        .as_ref()
+        .map_or(false, |out| out.status.success());
+    let ffplay_version = ffplay_cmd.and_then(|out| {
+        String::from_utf8(out.stdout)
+            .ok()
+            .and_then(|s| s.lines().next().map(|l| l.to_owned()))
+    });
+
+    let ffmpeg_cmd = Command::new("ffmpeg").arg("-version").output().ok();
+    let ffmpeg_available = ffmpeg_cmd
+        .as_ref()
+        .map_or(false, |out| out.status.success());
+    let ffmpeg_version = ffmpeg_cmd.and_then(|out| {
+        String::from_utf8(out.stdout)
+            .ok()
+            .and_then(|s| s.lines().next().map(|l| l.to_owned()))
+    });
+
+    let (alsa_cards, recommended_devices) = std::fs::read_to_string("/proc/asound/cards")
+        .map(|contents| parse_alsa_cards(&contents))
+        .unwrap_or_default();
+
+    AudioDiagnostics {
+        backend: backend.to_owned(),
+        device: device.to_owned(),
+        ffplay_available,
+        ffplay_version,
+        ffmpeg_available,
+        ffmpeg_version,
+        alsa_cards,
+        recommended_devices,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn player_initial_state() {
+        let player = AudioPlayer::new("sdl", "default");
+        assert!(!player.is_playing());
+        assert!(!player.is_paused());
+        assert_eq!(player.current_path(), None);
+        assert_eq!(player.position_seconds(), 0.0);
+    }
+
+    #[test]
+    fn parse_alsa_proc_cards_detects_ibasso_dzero() {
+        let mock_proc = " 0 [bcm2835_hdmi  ]: bcm2835_hdmi - bcm2835 HDMI 1\n 1 [DZero          ]: USB-Audio - iBasso D-Zero\n";
+        let (cards, recs) = parse_alsa_cards(mock_proc);
+        assert_eq!(cards.len(), 2);
+        assert!(cards[0].contains("bcm2835_hdmi"));
+        assert!(cards[1].contains("iBasso D-Zero"));
+        assert!(recs.iter().any(|r| r.contains("plughw:CARD=DZero,DEV=0")));
+        assert!(recs.iter().any(|r| r.contains("hw:CARD=DZero,DEV=0")));
+    }
+
+    #[test]
+    fn audio_diagnostics_report_formats() {
+        let diag = diagnose_audio("alsa", "plughw:CARD=DZero,DEV=0");
+        let report = diag.report();
+        assert!(report.contains("=== DECKPREP AUDIO HARDWARE DIAGNOSTICS ==="));
+        assert!(report.contains("Configured Audio Backend: alsa"));
+        assert!(report.contains("Configured Audio Device:  plughw:CARD=DZero,DEV=0"));
+    }
+}

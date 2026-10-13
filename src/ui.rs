@@ -11,7 +11,7 @@ use sdl2::{
 use crate::{
     config::{CounterMode, NormalizationMethod, RuntimeProfile},
     library::AudioTrack,
-    queue::match_tracks_ordered,
+    queue::{match_tracks_ordered, next_queue_version, queue_exists},
     timing::SessionPlan,
 };
 
@@ -22,7 +22,7 @@ const AMBER: Color = Color::RGB(242, 178, 74);
 const CREAM: Color = Color::RGB(220, 218, 196);
 const DIM: Color = Color::RGB(88, 101, 91);
 const RED: Color = Color::RGB(211, 76, 65);
-const VISIBLE_TRACKS: usize = 6;
+const VISIBLE_TRACKS: usize = 7;
 const TRACK_NAME_WIDTH: usize = 14;
 pub const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -51,6 +51,99 @@ pub struct ProfileEditor {
 
 pub struct QueueNameEditor {
     pub name: String,
+    pub confirming_overwrite: bool,
+    folder: std::path::PathBuf,
+}
+
+pub struct ProfileBrowser {
+    pub paths: Vec<std::path::PathBuf>,
+    cursor: usize,
+    viewport_start: usize,
+}
+
+impl ProfileBrowser {
+    pub fn new(paths: Vec<std::path::PathBuf>) -> Self {
+        Self {
+            paths,
+            cursor: 0,
+            viewport_start: 0,
+        }
+    }
+
+    pub fn handle_key(&mut self, key: Keycode) -> Option<bool> {
+        match key {
+            Keycode::Up | Keycode::K => self.cursor = self.cursor.saturating_sub(1),
+            Keycode::Down | Keycode::J if !self.paths.is_empty() => {
+                self.cursor = (self.cursor + 1).min(self.paths.len() - 1)
+            }
+            Keycode::PageUp => self.cursor = self.cursor.saturating_sub(7),
+            Keycode::PageDown if !self.paths.is_empty() => {
+                self.cursor = (self.cursor + 7).min(self.paths.len() - 1)
+            }
+            Keycode::Home => self.cursor = 0,
+            Keycode::End if !self.paths.is_empty() => self.cursor = self.paths.len() - 1,
+            Keycode::Return => return Some(true),
+            Keycode::Escape | Keycode::Q => return Some(false),
+            _ => {}
+        }
+        if self.cursor < self.viewport_start {
+            self.viewport_start = self.cursor;
+        }
+        if self.cursor >= self.viewport_start + 7 {
+            self.viewport_start = self.cursor + 1 - 7;
+        }
+        None
+    }
+
+    pub fn selected_path(&self) -> Option<&std::path::Path> {
+        self.paths.get(self.cursor).map(std::path::PathBuf::as_path)
+    }
+
+    pub fn render(&self, canvas: &mut Canvas<Window>) -> Result<(), String> {
+        canvas.set_draw_color(BACKGROUND);
+        canvas.clear();
+        outline(canvas, Rect::new(18, 20, 284, 200), AMBER)?;
+        fill(canvas, Rect::new(20, 22, 280, 196), PANEL)?;
+        text(canvas, 32, 32, "LOAD PROFILE", 2, PHOSPHOR)?;
+        if self.paths.is_empty() {
+            text(canvas, 38, 74, "NO SAVED PROFILES", 1, DIM)?;
+        }
+        for (row, path) in self
+            .paths
+            .iter()
+            .skip(self.viewport_start)
+            .take(7)
+            .enumerate()
+        {
+            let index = self.viewport_start + row;
+            let y = 60 + row as i32 * 17;
+            if index == self.cursor {
+                fill(
+                    canvas,
+                    Rect::new(28, y - 3, 264, 14),
+                    Color::RGB(42, 48, 43),
+                )?;
+            }
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("PROFILE.JSON");
+            text(
+                canvas,
+                34,
+                y,
+                &compact_track_name(name, 35),
+                1,
+                if index == self.cursor {
+                    PHOSPHOR
+                } else {
+                    CREAM
+                },
+            )?;
+        }
+        text(canvas, 32, 190, "ENTER LOAD   ESC CANCEL", 1, DIM)?;
+        Ok(())
+    }
 }
 
 pub struct QueueBrowser {
@@ -145,37 +238,93 @@ impl QueueBrowser {
 }
 
 impl QueueNameEditor {
-    pub fn new() -> Self {
+    pub fn new(folder: impl Into<std::path::PathBuf>) -> Self {
         Self {
             name: String::new(),
+            confirming_overwrite: false,
+            folder: folder.into(),
         }
     }
 
     pub fn handle_text_input(&mut self, value: &str) {
+        if self.confirming_overwrite {
+            self.confirming_overwrite = false;
+        }
         self.name.push_str(value);
     }
 
     pub fn handle_key(&mut self, key: Keycode) -> Option<bool> {
-        match key {
-            Keycode::Backspace => {
-                self.name.pop();
-                None
+        if self.confirming_overwrite {
+            match key {
+                Keycode::Return => Some(true),
+                Keycode::V => {
+                    self.name = next_queue_version(&self.folder, &self.name);
+                    Some(true)
+                }
+                Keycode::Escape => {
+                    self.confirming_overwrite = false;
+                    None
+                }
+                Keycode::Backspace => {
+                    self.confirming_overwrite = false;
+                    self.name.pop();
+                    None
+                }
+                _ => None,
             }
-            Keycode::Return => Some(true),
-            Keycode::Escape | Keycode::Q => Some(false),
-            _ => None,
+        } else {
+            match key {
+                Keycode::Backspace => {
+                    self.name.pop();
+                    None
+                }
+                Keycode::Return => {
+                    if self.name.trim().is_empty() {
+                        return None;
+                    }
+                    if queue_exists(&self.folder, &self.name) {
+                        self.confirming_overwrite = true;
+                        None
+                    } else {
+                        Some(true)
+                    }
+                }
+                Keycode::Escape | Keycode::Q => Some(false),
+                _ => None,
+            }
         }
     }
 
     pub fn render(&self, canvas: &mut Canvas<Window>) -> Result<(), String> {
         canvas.set_draw_color(BACKGROUND);
         canvas.clear();
-        outline(canvas, Rect::new(25, 75, 270, 90), AMBER)?;
-        fill(canvas, Rect::new(27, 77, 266, 86), PANEL)?;
-        text(canvas, 43, 88, "SAVE QUEUE", 2, PHOSPHOR)?;
-        text(canvas, 43, 108, "NAME", 1, CREAM)?;
-        text(canvas, 43, 123, &format!("{}_", self.name), 1, AMBER)?;
-        text(canvas, 43, 146, "ENTER SAVE   ESC CANCEL", 1, DIM)?;
+        outline(canvas, Rect::new(20, 68, 280, 102), AMBER)?;
+        fill(canvas, Rect::new(22, 70, 276, 98), PANEL)?;
+        if self.confirming_overwrite {
+            text(canvas, 36, 78, "FILE ALREADY EXISTS!", 1, RED)?;
+            text(
+                canvas,
+                36,
+                94,
+                &compact_track_name(&format!("{}.json", self.name), 38),
+                1,
+                PHOSPHOR,
+            )?;
+            text(canvas, 36, 114, "OVERWRITE OR CREATE VERSION?", 1, CREAM)?;
+            text(
+                canvas,
+                36,
+                142,
+                "ENT OVERWRITE  V VERSION  ESC NO",
+                1,
+                AMBER,
+            )?;
+        } else {
+            text(canvas, 38, 80, "SAVE QUEUE", 2, PHOSPHOR)?;
+            text(canvas, 38, 104, "NAME", 1, CREAM)?;
+            text(canvas, 38, 120, &format!("{}_", self.name), 1, AMBER)?;
+            text(canvas, 38, 144, "ENTER SAVE   ESC CANCEL", 1, DIM)?;
+        }
         Ok(())
     }
 }
@@ -208,10 +357,12 @@ pub fn render_legend(canvas: &mut Canvas<Window>, context: LegendContext) -> Res
             ("UP/DOWN", "MOVE TRACK"),
             ("SPACE", "SELECT"),
             ("C", "CLEAR SELECTION"),
+            ("1-5", "CALIBRATION TONES"),
             ("P", "PREVIEW"),
             ("X", "STOP"),
             ("N", "NORMALIZE"),
             ("CTRL-S/O", "QUEUE SAVE/BROWSE"),
+            ("L", "LOAD PROFILE"),
             ("ENTER", "PREPARE"),
             ("TAB / V", "SELECTED QUEUE"),
             ("W", "PROFILE EDITOR"),
@@ -219,6 +370,7 @@ pub fn render_legend(canvas: &mut Canvas<Window>, context: LegendContext) -> Res
         LegendContext::Review => &[
             ("UP/DOWN", "MOVE TRACK"),
             ("PGUP/PGDN", "JUMP"),
+            ("1-5", "CALIBRATION TONES"),
             ("P", "PREVIEW"),
             ("X", "STOP"),
             ("H/L", "SEEK 10 SEC"),
@@ -226,16 +378,27 @@ pub fn render_legend(canvas: &mut Canvas<Window>, context: LegendContext) -> Res
             ("ESC", "BACK"),
         ],
         LegendContext::ProfileEditor => &[
-            ("UP/DOWN", "MOVE FIELD"),
-            ("LEFT/RIGHT", "CHANGE VALUE"),
-            ("TYPE", "EDIT TEXT"),
-            ("BACKSPACE", "DELETE"),
-            ("CTRL-S", "SAVE"),
-            ("ESC", "CLOSE"),
+            ("UP/DOWN", "NAVIGATE FIELDS"),
+            ("[TXT] FIELDS", "TYPE TEXT / BKSP"),
+            ("[OPT] FIELDS", "LEFT/RIGHT CHANGE"),
+            ("CTRL-S", "SAVE PROFILE"),
+            ("ESC", "CLOSE EDITOR"),
         ],
     };
-    let spacing = if lines.len() > 7 { 13 } else { 17 };
-    let start_y = if lines.len() > 7 { 56 } else { 62 };
+    let spacing = if lines.len() > 10 {
+        11
+    } else if lines.len() > 7 {
+        13
+    } else {
+        17
+    };
+    let start_y = if lines.len() > 10 {
+        52
+    } else if lines.len() > 7 {
+        56
+    } else {
+        62
+    };
     for (index, (key, action)) in lines.iter().enumerate() {
         let y = start_y + index as i32 * spacing;
         text(canvas, 42, y, key, 1, AMBER)?;
@@ -372,10 +535,11 @@ impl NormalizationReview {
             1,
             capacity_color,
         )?;
-        text(canvas, 203, 184, "L", 1, DIM)?;
-        meter(canvas, 212, 184, meter_levels.map_or(0, |levels| levels.0))?;
-        text(canvas, 203, 194, "R", 1, DIM)?;
-        meter(canvas, 212, 194, meter_levels.map_or(0, |levels| levels.1))?;
+        text(canvas, 203, 183, "L", 1, DIM)?;
+        meter(canvas, 212, 182, meter_levels.map_or(0, |levels| levels.0))?;
+        text(canvas, 203, 193, "R", 1, DIM)?;
+        meter(canvas, 212, 192, meter_levels.map_or(0, |levels| levels.1))?;
+        text(canvas, 212, 202, "-40  -20  -6   0", 1, DIM)?;
         text(canvas, 14, 215, "P PREVIEW", 1, AMBER)?;
         text(canvas, 104, 215, "X STOP", 1, RED)?;
         text(canvas, 160, 215, "ENTER NEXT", 1, AMBER)?;
@@ -406,15 +570,29 @@ impl ProfileEditor {
         }
     }
 
+    pub fn is_text_field(&self) -> bool {
+        self.field < 5
+    }
+
     pub fn handle_key(&mut self, key: Keycode) -> bool {
-        match key {
-            Keycode::Up | Keycode::K => self.field = self.field.saturating_sub(1),
-            Keycode::Down | Keycode::J => self.field = (self.field + 1).min(12),
-            Keycode::Left | Keycode::H => self.change_value(-1),
-            Keycode::Right | Keycode::L => self.change_value(1),
-            Keycode::Backspace => self.handle_backspace(),
-            Keycode::Escape | Keycode::Q => return true,
-            _ => {}
+        if self.is_text_field() {
+            match key {
+                Keycode::Up => self.field = self.field.saturating_sub(1),
+                Keycode::Down => self.field = (self.field + 1).min(12),
+                Keycode::Backspace => self.handle_backspace(),
+                Keycode::Escape => return true,
+                _ => {}
+            }
+        } else {
+            match key {
+                Keycode::Up | Keycode::K => self.field = self.field.saturating_sub(1),
+                Keycode::Down | Keycode::J => self.field = (self.field + 1).min(12),
+                Keycode::Left | Keycode::H => self.change_value(-1),
+                Keycode::Right | Keycode::L => self.change_value(1),
+                Keycode::Backspace => self.handle_backspace(),
+                Keycode::Escape | Keycode::Q => return true,
+                _ => {}
+            }
         }
         false
     }
@@ -481,41 +659,161 @@ impl ProfileEditor {
         outline(canvas, Rect::new(6, 6, 308, 228), DIM)?;
         fill(canvas, Rect::new(9, 9, 302, 25), PANEL)?;
         text(canvas, 14, 13, "PROFILE EDITOR", 2, PHOSPHOR)?;
-        text(canvas, 14, 43, "UP/DOWN FIELD  LEFT/RIGHT CHANGE", 1, CREAM)?;
-        let fields = [
-            format!("NAME            {}", self.profile.name),
-            format!("TRACKS FOLDER   {}", self.profile.tracks_folder),
-            format!("NORMALIZED DIR  {}", self.profile.normalized_folder),
-            format!("AUDIO DEVICE    {}", self.profile.audio_device),
-            format!(
-                "CALIBRATION     {}",
-                self.profile.counter_config.as_deref().unwrap_or("NONE")
+
+        if self.is_text_field() {
+            text(canvas, 14, 43, "[TXT] TYPE TO EDIT  BKSP ERASE", 1, AMBER)?;
+        } else {
+            text(
+                canvas,
+                14,
+                43,
+                "[OPT] LEFT/RIGHT SELECT OPTION",
+                1,
+                PHOSPHOR,
+            )?;
+        }
+
+        let fields: [(&str, &str, String, bool); 13] = [
+            ("[TXT]", "NAME", self.profile.name.clone(), true),
+            (
+                "[TXT]",
+                "TRACKS FOLDER",
+                self.profile.tracks_folder.clone(),
+                true,
             ),
-            format!("SIDE MINUTES    {:>3}", self.profile.side_duration_minutes),
-            format!("LEADER GAP      {:>3}S", self.profile.leader_gap_seconds),
-            format!("TRACK GAP       {:>3}S", self.profile.track_gap_seconds),
-            format!("TARGET LUFS    {:>+5.1}", self.profile.target_lufs),
-            format!("COUNTER RATE   {:>5.1}", self.profile.counter_rate),
-            format!("NORMALIZATION   {:?}", self.profile.normalization),
-            format!("COUNTER MODE    {:?}", self.profile.counter_mode),
-            format!(
-                "FULLSCREEN      {}",
-                if self.profile.fullscreen { "YES" } else { "NO" }
+            (
+                "[TXT]",
+                "NORMALIZED DIR",
+                self.profile.normalized_folder.clone(),
+                true,
+            ),
+            (
+                "[TXT]",
+                "AUDIO DEVICE",
+                self.profile.audio_device.clone(),
+                true,
+            ),
+            (
+                "[TXT]",
+                "CALIBRATION",
+                self.profile.counter_config.clone().unwrap_or_default(),
+                true,
+            ),
+            (
+                "[OPT]",
+                "SIDE MINUTES",
+                format!("< {:>3} >", self.profile.side_duration_minutes),
+                false,
+            ),
+            (
+                "[OPT]",
+                "LEADER GAP",
+                format!("< {:>3}S >", self.profile.leader_gap_seconds),
+                false,
+            ),
+            (
+                "[OPT]",
+                "TRACK GAP",
+                format!("< {:>3}S >", self.profile.track_gap_seconds),
+                false,
+            ),
+            (
+                "[OPT]",
+                "TARGET LUFS",
+                format!("< {:>+5.1} >", self.profile.target_lufs),
+                false,
+            ),
+            (
+                "[OPT]",
+                "COUNTER RATE",
+                format!("< {:>5.1} >", self.profile.counter_rate),
+                false,
+            ),
+            (
+                "[OPT]",
+                "NORMALIZATION",
+                format!("< {:?} >", self.profile.normalization),
+                false,
+            ),
+            (
+                "[OPT]",
+                "COUNTER MODE",
+                format!("< {:?} >", self.profile.counter_mode),
+                false,
+            ),
+            (
+                "[OPT]",
+                "FULLSCREEN",
+                format!(
+                    "< {:^3} >",
+                    if self.profile.fullscreen { "YES" } else { "NO" }
+                ),
+                false,
             ),
         ];
+
         let first_field = self.field.saturating_sub(5);
-        for (row, field) in fields.iter().skip(first_field).take(8).enumerate() {
+        for (row, (tag, label, value, is_text)) in
+            fields.iter().skip(first_field).take(8).enumerate()
+        {
             let index = first_field + row;
-            let color = if index == self.field { PHOSPHOR } else { CREAM };
-            if index == self.field {
+            let highlighted = index == self.field;
+            let row_y = 65 + row as i32 * 17;
+
+            if highlighted {
                 fill(
                     canvas,
-                    Rect::new(12, 61 + row as i32 * 17, 296, 14),
+                    Rect::new(12, row_y - 4, 296, 15),
                     Color::RGB(42, 48, 43),
                 )?;
             }
-            text(canvas, 18, 65 + row as i32 * 17, field, 1, color)?;
+
+            let tag_color = if *is_text {
+                if highlighted { AMBER } else { DIM }
+            } else {
+                if highlighted { PHOSPHOR } else { DIM }
+            };
+            text(canvas, 16, row_y, tag, 1, tag_color)?;
+
+            let label_color = if highlighted { PHOSPHOR } else { CREAM };
+            text(canvas, 52, row_y, label, 1, label_color)?;
+
+            let val_color = if highlighted {
+                if *is_text { CREAM } else { AMBER }
+            } else {
+                CREAM
+            };
+
+            let display_val = if *is_text {
+                if highlighted {
+                    let with_cursor = format!("{value}_");
+                    if with_cursor.chars().count() > 24 {
+                        let chars: Vec<char> = with_cursor.chars().collect();
+                        format!(
+                            "...{}",
+                            chars[chars.len() - 21..].iter().collect::<String>()
+                        )
+                    } else {
+                        with_cursor
+                    }
+                } else if value.is_empty() {
+                    "(none)".to_owned()
+                } else if value.chars().count() > 24 {
+                    let chars: Vec<char> = value.chars().collect();
+                    format!(
+                        "...{}",
+                        chars[chars.len() - 21..].iter().collect::<String>()
+                    )
+                } else {
+                    value.clone()
+                }
+            } else {
+                value.clone()
+            };
+
+            text(canvas, 154, row_y, &display_val, 1, val_color)?;
         }
+
         fill(canvas, Rect::new(9, 211, 302, 20), PANEL)?;
         text(canvas, 14, 215, "CTRL-S SAVE", 1, AMBER)?;
         text(canvas, 150, 215, "ESC CLOSE", 1, RED)?;
@@ -661,6 +959,20 @@ impl AppUi {
             .collect()
     }
 
+    pub fn reset_library(&mut self, tracks: Vec<AudioTrack>, error: Option<String>) {
+        self.tracks = tracks;
+        self.cursor = 0;
+        self.viewport_start = 0;
+        self.selected = vec![false; self.tracks.len()];
+        self.selection_order.clear();
+        self.selected_panel = false;
+        self.armed = false;
+        self.previewing = false;
+        self.preview_paused = false;
+        self.library_error = error;
+        self.focus_changed_at = Instant::now();
+    }
+
     pub fn clear_selection(&mut self) {
         if self.selected.iter().any(|&is_selected| is_selected) {
             self.selected.fill(false);
@@ -728,18 +1040,22 @@ impl AppUi {
         fill(canvas, Rect::new(9, 9, 302, 25), PANEL)?;
         text(canvas, 14, 13, "DECKPREP", 2, PHOSPHOR)?;
         text(canvas, 121, 14, "TAPE RECORDING CONSOLE", 1, CREAM)?;
-        text(canvas, 121, 24, "320X240 / 60HZ", 1, AMBER)?;
-
-        fill(canvas, Rect::new(9, 37, 302, 13), Color::RGB(18, 21, 20))?;
         text(
             canvas,
-            13,
-            40,
-            &format!("PROFILE: {}", profile.name),
+            121,
+            24,
+            &compact_track_name(&format!("PROFILE: {}", profile.name), 17),
+            1,
+            AMBER,
+        )?;
+        text(
+            canvas,
+            227,
+            24,
+            &compact_track_name(&format!("DAC: {}", profile.audio_device), 12),
             1,
             DIM,
         )?;
-        text(canvas, 207, 40, "USB DAC: DEFAULT", 1, DIM)?;
 
         draw_tracks(
             canvas,
@@ -755,7 +1071,7 @@ impl AppUi {
             draw_selected_panel(
                 canvas,
                 &self.tracks,
-                &self.selected,
+                &self.selection_order,
                 self.cursor,
                 self.focus_changed_at.elapsed(),
                 profile,
@@ -954,24 +1270,40 @@ impl AppUi {
         fill(canvas, Rect::new(9, 9, 302, 25), PANEL)?;
         text(canvas, 14, 13, "DECKPREP", 2, PHOSPHOR)?;
         text(canvas, 121, 14, "DECK RECORDING MODE", 1, CREAM)?;
-        text(canvas, 121, 24, "PVM 320X240 / 60HZ", 1, AMBER)?;
-
-        text(canvas, 14, 43, phase, 1, AMBER)?;
         text(
             canvas,
-            207,
-            43,
-            &clipped_track_name(&format!("PROFILE {}", profile.name), 16),
+            121,
+            24,
+            &compact_track_name(&format!("PROFILE: {}", profile.name), 17),
+            1,
+            AMBER,
+        )?;
+        text(
+            canvas,
+            227,
+            24,
+            &compact_track_name(&format!("DAC: {}", profile.audio_device), 12),
             1,
             DIM,
         )?;
-        text(canvas, 14, 57, "TAPE COUNTER", 1, CREAM)?;
-        draw_counter(canvas, 22, 70, counter)?;
-        draw_tape_reels(canvas, 153, 57, marquee_elapsed, counter_running)?;
 
+        text(canvas, 14, 43, phase, 1, AMBER)?;
         let total = total_seconds.max(1);
         let progress = elapsed_seconds.min(total);
         let remaining = total.saturating_sub(progress);
+
+        text(canvas, 14, 57, "TAPE COUNTER", 1, CREAM)?;
+        draw_counter(canvas, 22, 70, counter)?;
+        draw_tape_reels(
+            canvas,
+            184,
+            55,
+            marquee_elapsed,
+            counter_running,
+            progress,
+            total,
+        )?;
+
         text(
             canvas,
             14,
@@ -1043,10 +1375,11 @@ impl AppUi {
                 color,
             )?;
         }
-        text(canvas, 194, 179, "L", 1, DIM)?;
-        meter(canvas, 205, 178, meter_levels.0)?;
-        text(canvas, 194, 193, "R", 1, DIM)?;
-        meter(canvas, 205, 192, meter_levels.1)?;
+        text(canvas, 194, 175, "L", 1, DIM)?;
+        meter(canvas, 205, 174, meter_levels.0)?;
+        text(canvas, 194, 187, "R", 1, DIM)?;
+        meter(canvas, 205, 186, meter_levels.1)?;
+        text(canvas, 205, 197, "-40  -20  -6   0", 1, DIM)?;
         Ok(())
     }
 }
@@ -1114,49 +1447,462 @@ fn draw_tape_reels(
     y: i32,
     elapsed: Duration,
     rotating: bool,
+    progress: u32,
+    total: u32,
 ) -> Result<(), String> {
-    outline(canvas, Rect::new(x, y, 154, 52), DIM)?;
-    let left_center = (x + 34, y + 26);
-    let right_center = (x + 120, y + 26);
-    canvas.set_draw_color(Color::RGB(68, 82, 72));
-    canvas.draw_line(
-        (left_center.0 + 13, left_center.1),
-        (right_center.0 - 13, right_center.1),
+    // Standard audio cassette aspect ratio: 100mm x 64mm (approx 1.56 : 1)
+    // Scaled for pixel display: 84px wide x 54px high (~1.55 : 1)
+    const W: u32 = 84;
+    const H: u32 = 54;
+    let cassette_bg = Color::RGB(22, 26, 24);
+    let cassette_label = Color::RGB(34, 40, 36);
+    let label_border = Color::RGB(55, 65, 58);
+    let tape_pack_color = Color::RGB(70, 50, 42);
+    let tape_path_color = Color::RGBA(125, 90, 70, 160);
+    let window_bg = Color::RGB(10, 12, 11);
+
+    // Cassette shell body & outer bevel
+    fill(canvas, Rect::new(x, y, W, H), cassette_bg)?;
+    outline(canvas, Rect::new(x, y, W, H), Color::RGB(52, 62, 56))?;
+    outline(
+        canvas,
+        Rect::new(x + 1, y + 1, W - 2, H - 2),
+        Color::RGB(16, 20, 18),
     )?;
-    let angle = if rotating {
-        elapsed.as_secs_f64() * 2.8
+
+    // Four corner assembly screws
+    let screw_color = Color::RGB(90, 105, 95);
+    fill(canvas, Rect::new(x + 2, y + 2, 2, 2), screw_color)?;
+    fill(
+        canvas,
+        Rect::new(x + (W as i32) - 4, y + 2, 2, 2),
+        screw_color,
+    )?;
+    fill(
+        canvas,
+        Rect::new(x + 2, y + (H as i32) - 4, 2, 2),
+        screw_color,
+    )?;
+    fill(
+        canvas,
+        Rect::new(x + (W as i32) - 4, y + (H as i32) - 4, 2, 2),
+        screw_color,
+    )?;
+
+    // Center label sticker
+    fill(canvas, Rect::new(x + 6, y + 4, W - 12, 37), cassette_label)?;
+    outline(canvas, Rect::new(x + 6, y + 4, W - 12, 37), label_border)?;
+    // Retro accent line on the label
+    fill(canvas, Rect::new(x + 8, y + 6, W - 16, 1), AMBER)?;
+
+    // Transparent inspection window
+    let win_x = x + 11;
+    let win_y = y + 10;
+    let win_w = 62;
+    let win_h = 29;
+    fill(canvas, Rect::new(win_x, win_y, win_w, win_h), window_bg)?;
+    outline(canvas, Rect::new(win_x, win_y, win_w, win_h), DIM)?;
+
+    // Center reel hubs (standard spacing: ~42.5mm on 100mm cassette -> ratio ~0.425 * 58px)
+    let left_center = (win_x + 16, win_y + 14);
+    let right_center = (win_x + 46, win_y + 14);
+
+    // Center guide tick marks between reels
+    canvas.set_draw_color(Color::RGB(40, 50, 44));
+    canvas.draw_line((win_x + 31, win_y + 3), (win_x + 31, win_y + 26))?;
+    canvas.draw_line((win_x + 29, win_y + 14), (win_x + 33, win_y + 14))?;
+
+    // Dynamic tape pack radius based on playback progress (0.0 to 1.0)
+    let ratio = if total > 0 {
+        f64::from(progress) / f64::from(total)
+    } else {
+        0.0
+    }
+    .clamp(0.0, 1.0);
+
+    // Reel hub outer radius is 5px.
+    // Full spool radius: 14px (increased by 3px from 11px)
+    // Empty spool radius: 5px (bare hub core)
+    let left_pack_r = 14.0 - ratio * 9.0;
+    let right_pack_r = 5.0 + ratio * 9.0;
+
+    // Angular rotation: differential speed
+    let left_speed = 2.0 + (ratio * 1.5);
+    let right_speed = 3.5 - (ratio * 1.5);
+    let elapsed_sec = elapsed.as_secs_f64();
+    let left_angle = if rotating {
+        elapsed_sec * left_speed
     } else {
         0.0
     };
-    draw_reel(canvas, left_center.0, left_center.1, angle, PHOSPHOR)?;
-    draw_reel(canvas, right_center.0, right_center.1, -angle * 0.72, AMBER)?;
+    let right_angle = if rotating {
+        elapsed_sec * right_speed
+    } else {
+        0.0
+    };
+    let roller_angle = if rotating { elapsed_sec * 9.5 } else { 0.0 };
+
+    // Draw tape spools (wound magnetic tape packs with dynamic shimmering light reflection)
+    draw_tape_pack(
+        canvas,
+        left_center.0,
+        left_center.1,
+        left_pack_r,
+        left_angle,
+        tape_pack_color,
+    )?;
+    draw_tape_pack(
+        canvas,
+        right_center.0,
+        right_center.1,
+        right_pack_r,
+        -right_angle,
+        tape_pack_color,
+    )?;
+
+    // Lower trapezoid tape path / head opening area (cassette chin)
+    let trap_x = x + 10;
+    let trap_y = y + 41;
+    let trap_w = W - 20; // 64px
+    let trap_h = 11;
+    fill(
+        canvas,
+        Rect::new(trap_x, trap_y, trap_w, trap_h),
+        Color::RGB(16, 19, 17),
+    )?;
+    outline(
+        canvas,
+        Rect::new(trap_x, trap_y, trap_w, trap_h),
+        Color::RGB(48, 58, 52),
+    )?;
+
+    // Roller guide positions placed right at the outer lower corners near the shell frame
+    let left_roller = (x + 6, y + 47);
+    let right_roller = (x + (W as i32) - 7, y + 47);
+
+    // Left and right capstan drive pass-through holes
+    fill(
+        canvas,
+        Rect::new(trap_x + 9, trap_y + 4, 3, 3),
+        Color::RGB(10, 12, 11),
+    )?;
+    fill(
+        canvas,
+        Rect::new(trap_x + (trap_w as i32) - 12, trap_y + 4, 3, 3),
+        Color::RGB(10, 12, 11),
+    )?;
+
+    // Central magnetic head shield & felt pressure pad
+    let head_center_x = trap_x + (trap_w as i32) / 2;
+    fill(
+        canvas,
+        Rect::new(head_center_x - 5, trap_y + 4, 10, 5),
+        Color::RGB(140, 110, 60), // bronze head shield
+    )?;
+    fill(
+        canvas,
+        Rect::new(head_center_x - 3, trap_y + 6, 6, 2),
+        Color::RGB(200, 170, 110), // felt pad
+    )?;
+
+    // 1. Diagonal tape unwinding from supply pack down to left roller guide (1px single line)
+    canvas.set_blend_mode(BlendMode::Blend);
+    let left_tangent_x = (left_center.0 as f64 - left_pack_r).round() as i32;
+    canvas.set_draw_color(tape_path_color);
+    canvas.draw_line(
+        (left_tangent_x, left_center.1),
+        (left_roller.0 - 2, left_roller.1),
+    )?;
+
+    // 2. Diagonal tape winding from right roller guide up to take-up pack (1px single line)
+    let right_tangent_x = (right_center.0 as f64 + right_pack_r).round() as i32;
+    canvas.draw_line(
+        (right_roller.0 + 2, right_roller.1),
+        (right_tangent_x, right_center.1),
+    )?;
+
+    // 3. Horizontal magnetic tape running across the lower head opening between the rollers (1px line)
+    canvas.draw_line(
+        (left_roller.0 + 3, trap_y + 7),
+        (right_roller.0 - 3, trap_y + 7),
+    )?;
+    canvas.set_blend_mode(BlendMode::None);
+
+    // Draw the left and right roller guides with spinning flutes and center pins
+    draw_roller_guide(canvas, left_roller.0, left_roller.1, roller_angle)?;
+    draw_roller_guide(canvas, right_roller.0, right_roller.1, -roller_angle)?;
+
+    // Vertical tape guide pins next to the head opening
+    fill(
+        canvas,
+        Rect::new(head_center_x - 7, trap_y + 4, 1, 4),
+        Color::RGB(90, 100, 95),
+    )?;
+    fill(
+        canvas,
+        Rect::new(head_center_x + 6, trap_y + 4, 1, 4),
+        Color::RGB(90, 100, 95),
+    )?;
+
+    // Draw cassette reel hubs
+    draw_reel_hub(canvas, left_center.0, left_center.1, left_angle, PHOSPHOR)?;
+    draw_reel_hub(canvas, right_center.0, right_center.1, -right_angle, CREAM)?;
+
     Ok(())
 }
 
-fn draw_reel(
+fn draw_roller_guide(
+    canvas: &mut Canvas<Window>,
+    center_x: i32,
+    center_y: i32,
+    angle: f64,
+) -> Result<(), String> {
+    // 5px circular outer wheel with rounded rim (radius 2 circle with corner softening)
+    // Outer flanged rim ring:
+    let rim_color = Color::RGB(130, 140, 130);
+    let wheel_color = Color::RGB(220, 225, 215);
+
+    // Row dy = -2: 3px wide (-1..=1)
+    fill(
+        canvas,
+        Rect::new(center_x - 1, center_y - 2, 3, 1),
+        rim_color,
+    )?;
+    // Row dy = -1: 5px wide (-2..=2), rim on ends
+    fill(
+        canvas,
+        Rect::new(center_x - 2, center_y - 1, 1, 1),
+        rim_color,
+    )?;
+    fill(
+        canvas,
+        Rect::new(center_x - 1, center_y - 1, 3, 1),
+        wheel_color,
+    )?;
+    fill(
+        canvas,
+        Rect::new(center_x + 2, center_y - 1, 1, 1),
+        rim_color,
+    )?;
+    // Row dy = 0: 5px wide (-2..=2), rim on ends
+    fill(canvas, Rect::new(center_x - 2, center_y, 1, 1), rim_color)?;
+    fill(canvas, Rect::new(center_x - 1, center_y, 3, 1), wheel_color)?;
+    fill(canvas, Rect::new(center_x + 2, center_y, 1, 1), rim_color)?;
+    // Row dy = 1: 5px wide (-2..=2), rim on ends
+    fill(
+        canvas,
+        Rect::new(center_x - 2, center_y + 1, 1, 1),
+        rim_color,
+    )?;
+    fill(
+        canvas,
+        Rect::new(center_x - 1, center_y + 1, 3, 1),
+        wheel_color,
+    )?;
+    fill(
+        canvas,
+        Rect::new(center_x + 2, center_y + 1, 1, 1),
+        rim_color,
+    )?;
+    // Row dy = 2: 3px wide (-1..=1)
+    fill(
+        canvas,
+        Rect::new(center_x - 1, center_y + 2, 3, 1),
+        rim_color,
+    )?;
+
+    // Rotating flute / notch on the roller
+    let notch_x = center_x + (angle.cos() * 1.4).round() as i32;
+    let notch_y = center_y + (angle.sin() * 1.4).round() as i32;
+    fill(
+        canvas,
+        Rect::new(notch_x, notch_y, 1, 1),
+        Color::RGB(70, 80, 72),
+    )?;
+
+    // Central brass/steel pivot pin (center dot)
+    fill(
+        canvas,
+        Rect::new(center_x, center_y, 1, 1),
+        Color::RGB(40, 35, 30),
+    )?;
+
+    Ok(())
+}
+
+fn draw_circle_filled(
+    canvas: &mut Canvas<Window>,
+    center_x: i32,
+    center_y: i32,
+    radius: i32,
+    color: Color,
+) -> Result<(), String> {
+    canvas.set_draw_color(color);
+    let r2 = radius * radius;
+    for dy in -radius..=radius {
+        let max_dx = ((r2 - dy * dy) as f64).sqrt() as i32;
+        canvas.draw_line(
+            (center_x - max_dx, center_y + dy),
+            (center_x + max_dx, center_y + dy),
+        )?;
+    }
+    Ok(())
+}
+
+fn draw_tape_pack(
+    canvas: &mut Canvas<Window>,
+    center_x: i32,
+    center_y: i32,
+    radius: f64,
+    angle: f64,
+    pack_color: Color,
+) -> Result<(), String> {
+    let r = radius.round() as i32;
+    draw_circle_filled(canvas, center_x, center_y, r, pack_color)?;
+
+    // If tape is wound onto the spool beyond the core hub (r > 5), render dynamic reflection & winding texture
+    if radius > 5.5 {
+        let r_sq = (radius * radius) as i32;
+
+        // Subtle specular pulse in brightness as the tape moves through the light beam
+        let pulse = ((angle * 4.0).sin() * 18.0) as i32;
+        let gleam_r = (142 + pulse).clamp(110, 175) as u8;
+        let gleam_g = (112 + pulse * 3 / 4).clamp(85, 140) as u8;
+        let gleam_b = (95 + pulse / 2).clamp(70, 118) as u8;
+        let gleam_color = Color::RGB(gleam_r, gleam_g, gleam_b);
+
+        // 1. Upper specular highlight crescent (anchored overhead, subtly undulating with movement)
+        let gleam_shift = ((angle * 3.0).cos() * 1.0).round() as i32;
+        for dy in -r..=-2 {
+            let dy_f = dy as f64;
+            let max_dx = ((radius * radius - dy_f * dy_f).max(0.0)).sqrt() as i32;
+            for dx in -max_dx..=max_dx {
+                let dist_sq = dx * dx + dy * dy;
+                if dist_sq > 25 && dist_sq <= r_sq {
+                    // Upper-left specular gleam
+                    if dx < 0 && dy < -3 && dx > dy - 2 + gleam_shift && dx < dy + 8 + gleam_shift {
+                        fill(
+                            canvas,
+                            Rect::new(center_x + dx, center_y + dy, 1, 1),
+                            gleam_color,
+                        )?;
+                    } else if dy <= -(r / 2) && dx.abs() <= (r / 2) {
+                        // Soft upper sheen arc
+                        fill(
+                            canvas,
+                            Rect::new(center_x + dx, center_y + dy, 1, 1),
+                            Color::RGB(98, 74, 62),
+                        )?;
+                    }
+                }
+            }
+        }
+
+        // 2. Anisotropic reflection streak (anchored at ~135°, shimmering as tape ribbons rotate)
+        if radius >= 8.0 {
+            let inner_r = 5.5;
+            let outer_r = radius - 1.0;
+            // Shimmering angular wobble in sync with spool rotation
+            let shimmer = (angle * 3.0).sin() * 0.12;
+            let streaks: [(f64, Color); 2] = [
+                (2.356_f64 + shimmer, Color::RGB(118, 90, 76)), // ~135 deg highlight
+                (5.498_f64 + shimmer * 0.7, Color::RGB(88, 64, 52)), // ~315 deg softer counter-sheen
+            ];
+            for (streak_angle, col) in streaks {
+                let cos_a = streak_angle.cos();
+                let sin_a = streak_angle.sin();
+                let start = (
+                    (center_x as f64 + cos_a * inner_r).round() as i32,
+                    (center_y as f64 + sin_a * inner_r).round() as i32,
+                );
+                let end = (
+                    (center_x as f64 + cos_a * outer_r).round() as i32,
+                    (center_y as f64 + sin_a * outer_r).round() as i32,
+                );
+                canvas.set_draw_color(col);
+                canvas.draw_line(start, end)?;
+            }
+
+            // Traveling glint along the main highlight streak showing tape layers gliding through
+            for step in 0..2 {
+                let phase = (angle * 0.8 + f64::from(step) * 0.5).rem_euclid(1.0);
+                let glint_dist = inner_r + phase * (outer_r - inner_r);
+                let main_angle = 2.356_f64 + shimmer;
+                let gx = (center_x as f64 + main_angle.cos() * glint_dist).round() as i32;
+                let gy = (center_y as f64 + main_angle.sin() * glint_dist).round() as i32;
+                fill(canvas, Rect::new(gx, gy, 1, 1), Color::RGB(165, 138, 118))?;
+            }
+        }
+
+        // 3. Concentric groove ring showing tight layers of wound magnetic tape
+        if radius >= 9.0 {
+            let ring_r = (radius * 0.68).round() as i32;
+            let r2 = ring_r * ring_r;
+            for dy in -ring_r..=ring_r {
+                let dx = ((r2 - dy * dy) as f64).sqrt().round() as i32;
+                if dx > 1 {
+                    fill(
+                        canvas,
+                        Rect::new(center_x + dx, center_y + dy, 1, 1),
+                        Color::RGB(52, 36, 30),
+                    )?;
+                    fill(
+                        canvas,
+                        Rect::new(center_x - dx, center_y + dy, 1, 1),
+                        Color::RGB(52, 36, 30),
+                    )?;
+                }
+            }
+        }
+
+        // 4. Subtle top-rim edge highlight
+        let top_y = center_y - r;
+        fill(
+            canvas,
+            Rect::new(center_x - 2, top_y + 1, 5, 1),
+            Color::RGB(110, 84, 70),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn draw_reel_hub(
     canvas: &mut Canvas<Window>,
     center_x: i32,
     center_y: i32,
     angle: f64,
     color: Color,
 ) -> Result<(), String> {
-    for offset_y in -14_i32..=14 {
-        for offset_x in -14_i32..=14 {
-            let distance = offset_x * offset_x + offset_y * offset_y;
-            if (distance - 144).abs() <= 14 || distance <= 10 {
-                fill(
-                    canvas,
-                    Rect::new(center_x + offset_x, center_y + offset_y, 1, 1),
-                    color,
-                )?;
+    // Hub core ring (radius 5)
+    for dy in -5_i32..=5 {
+        for dx in -5_i32..=5 {
+            let dist = dx * dx + dy * dy;
+            if dist <= 25 && dist >= 7 {
+                fill(canvas, Rect::new(center_x + dx, center_y + dy, 1, 1), color)?;
             }
         }
     }
-    canvas.set_draw_color(color);
-    for spoke in 0..3 {
-        let spoke_angle = angle + f64::from(spoke) * std::f64::consts::TAU / 3.0;
-        let inner = 4.0;
-        let outer = 10.0;
+    // 3 rotating punch holes in the hub ring for distinct spinning visibility
+    for i in 0..3 {
+        let hole_angle = angle + f64::from(i) * std::f64::consts::TAU / 3.0 + 0.52;
+        let hx = (center_x as f64 + hole_angle.cos() * 3.6).round() as i32;
+        let hy = (center_y as f64 + hole_angle.sin() * 3.6).round() as i32;
+        fill(canvas, Rect::new(hx, hy, 1, 1), Color::RGB(10, 12, 11))?;
+    }
+    // Center spindle hole
+    fill(
+        canvas,
+        Rect::new(center_x - 1, center_y - 1, 3, 3),
+        Color::RGB(10, 12, 11),
+    )?;
+
+    // Drive splines / teeth protruding into the center hole
+    canvas.set_draw_color(Color::RGB(25, 30, 27));
+    for spoke in 0..6 {
+        let spoke_angle = angle + f64::from(spoke) * std::f64::consts::TAU / 6.0;
+        let inner = 1.0;
+        let outer = 4.0;
         let start = (
             center_x + (spoke_angle.cos() * inner).round() as i32,
             center_y + (spoke_angle.sin() * inner).round() as i32,
@@ -1196,25 +1942,25 @@ fn draw_tracks(
     library_error: Option<&str>,
     profile: &RuntimeProfile,
 ) -> Result<(), String> {
-    fill(canvas, Rect::new(9, 53, 174, 154), PANEL)?;
-    text(canvas, 14, 58, "TRACK QUEUE", 1, AMBER)?;
+    fill(canvas, Rect::new(9, 37, 174, 170), PANEL)?;
+    text(canvas, 14, 42, "TRACK QUEUE", 1, AMBER)?;
     text(
         canvas,
         103,
-        58,
+        42,
         &format!("SIDE {:02}:00", profile.side_duration_minutes),
         1,
         DIM,
     )?;
     canvas.set_draw_color(DIM);
-    canvas.draw_line((14, 68), (177, 68))?;
+    canvas.draw_line((14, 52), (177, 52))?;
 
     if tracks.is_empty() {
-        text(canvas, 19, 86, "NO AUDIO TRACKS", 1, AMBER)?;
-        text(canvas, 19, 100, "ADD FILES TO", 1, CREAM)?;
-        text(canvas, 19, 110, "THE TRACKS FOLDER", 1, CREAM)?;
+        text(canvas, 19, 76, "NO AUDIO TRACKS", 1, AMBER)?;
+        text(canvas, 19, 90, "ADD FILES TO", 1, CREAM)?;
+        text(canvas, 19, 100, "THE TRACKS FOLDER", 1, CREAM)?;
         if library_error.is_some() {
-            text(canvas, 19, 130, "FOLDER UNAVAILABLE", 1, RED)?;
+            text(canvas, 19, 120, "FOLDER UNAVAILABLE", 1, RED)?;
         }
         return Ok(());
     }
@@ -1222,11 +1968,11 @@ fn draw_tracks(
     let visible_end = (viewport_start + VISIBLE_TRACKS).min(tracks.len());
     for (row, track) in tracks[viewport_start..visible_end].iter().enumerate() {
         let index = viewport_start + row;
-        let y = 74 + row as i32 * 21;
+        let y = 57 + row as i32 * 20;
         if index == cursor {
             fill(
                 canvas,
-                Rect::new(12, y - 3, 168, 17),
+                Rect::new(12, y - 3, 168, 16),
                 Color::RGB(42, 48, 43),
             )?;
         }
@@ -1323,8 +2069,8 @@ fn draw_scrollbar(
     draw_scrollbar_at(
         canvas,
         176,
-        73,
-        127,
+        56,
+        144,
         2,
         track_count,
         viewport_start,
@@ -1402,7 +2148,7 @@ mod tests {
             ui.handle_key(Keycode::Down, &profile);
         }
         assert_eq!(ui.cursor, 7);
-        assert_eq!(ui.viewport_start, 2);
+        assert_eq!(ui.viewport_start, 1);
 
         ui.handle_key(Keycode::Home, &profile);
         assert_eq!(ui.cursor, 0);
@@ -1410,7 +2156,7 @@ mod tests {
 
         ui.handle_key(Keycode::End, &profile);
         assert_eq!(ui.cursor, 11);
-        assert_eq!(ui.viewport_start, 6);
+        assert_eq!(ui.viewport_start, 5);
     }
 
     #[test]
@@ -1500,6 +2246,127 @@ mod tests {
         ui.clear_normalization_status();
         assert_eq!(ui.current_status(), None);
     }
+
+    #[test]
+    fn profile_browser_navigation_and_selection() {
+        let paths = vec![
+            std::path::PathBuf::from("profiles/p1.json"),
+            std::path::PathBuf::from("profiles/p2.json"),
+        ];
+        let mut browser = ProfileBrowser::new(paths.clone());
+        assert_eq!(browser.selected_path(), Some(paths[0].as_path()));
+
+        browser.handle_key(Keycode::Down);
+        assert_eq!(browser.selected_path(), Some(paths[1].as_path()));
+
+        assert_eq!(browser.handle_key(Keycode::Return), Some(true));
+        assert_eq!(browser.handle_key(Keycode::Escape), Some(false));
+    }
+
+    #[test]
+    fn profile_editor_distinguishes_text_and_option_fields() {
+        let profile = RuntimeProfile::default();
+        let mut editor = ProfileEditor::new(&profile);
+
+        // Fields 0 to 4 are text fields
+        for field_index in 0..5 {
+            editor.field = field_index;
+            assert!(editor.is_text_field());
+        }
+
+        // Fields 5 to 12 are option/numerical fields
+        for field_index in 5..=12 {
+            editor.field = field_index;
+            assert!(!editor.is_text_field());
+        }
+
+        // Editing tracks_folder preserves exact lowercase path
+        editor.field = 1;
+        editor.profile.tracks_folder.clear();
+        editor.handle_text_input("/home/pi/Music_Tracks");
+        assert_eq!(editor.profile.tracks_folder, "/home/pi/Music_Tracks");
+
+        // Backspace removes last character
+        editor.handle_backspace();
+        assert_eq!(editor.profile.tracks_folder, "/home/pi/Music_Track");
+
+        // On text fields, typing keys like Q, J, K don't quit or move fields
+        assert!(!editor.handle_key(Keycode::Q));
+        assert!(!editor.handle_key(Keycode::J));
+        assert!(!editor.handle_key(Keycode::K));
+        assert_eq!(editor.field, 1);
+
+        // Arrow keys navigate fields
+        editor.handle_key(Keycode::Down);
+        assert_eq!(editor.field, 2);
+        editor.handle_key(Keycode::Up);
+        assert_eq!(editor.field, 1);
+
+        // On option fields, Left/Right change values and Q quits
+        editor.field = 5; // side_duration_minutes (default 30)
+        assert!(!editor.is_text_field());
+        editor.handle_key(Keycode::Right);
+        assert_eq!(editor.profile.side_duration_minutes, 31);
+        editor.handle_key(Keycode::Left);
+        assert_eq!(editor.profile.side_duration_minutes, 30);
+        assert!(editor.handle_key(Keycode::Q));
+    }
+
+    #[test]
+    fn glyph_supports_lowercase_and_path_symbols() {
+        for c in 'a'..='z' {
+            let bitmap = glyph(c);
+            assert!(bitmap.iter().any(|&b| b > 0), "glyph for '{c}' is empty");
+        }
+        for c in ['_', '<', '>', '/', '\\', '~', '(', ')', '+', '-', '.'] {
+            let bitmap = glyph(c);
+            assert!(bitmap.iter().any(|&b| b > 0), "glyph for '{c}' is empty");
+        }
+    }
+
+    #[test]
+    fn queue_name_editor_flow_and_overwrite_confirmation() {
+        let root = std::env::temp_dir().join("deckprep-ui-queue-test");
+        std::fs::create_dir_all(&root).unwrap();
+
+        // 1. New name saves immediately
+        let mut editor = QueueNameEditor::new(&root);
+        editor.handle_text_input("side_a");
+        assert_eq!(editor.name, "side_a");
+        assert_eq!(editor.handle_key(Keycode::Return), Some(true));
+        assert!(!editor.confirming_overwrite);
+
+        // Pre-create side_a.json in root
+        std::fs::write(root.join("side_a.json"), "{}\n").unwrap();
+
+        // 2. Existing name enters overwrite confirmation
+        let mut editor2 = QueueNameEditor::new(&root);
+        editor2.handle_text_input("side_a");
+        assert_eq!(editor2.handle_key(Keycode::Return), None);
+        assert!(editor2.confirming_overwrite);
+
+        // 3. User cancels overwrite prompt with Escape -> stays in editor
+        assert_eq!(editor2.handle_key(Keycode::Escape), None);
+        assert!(!editor2.confirming_overwrite);
+
+        // 4. Pressing Enter again re-prompts
+        assert_eq!(editor2.handle_key(Keycode::Return), None);
+        assert!(editor2.confirming_overwrite);
+
+        // 5. User confirms overwrite with Return
+        assert_eq!(editor2.handle_key(Keycode::Return), Some(true));
+        assert_eq!(editor2.name, "side_a");
+
+        // 6. User chooses auto-versioning with V
+        let mut editor3 = QueueNameEditor::new(&root);
+        editor3.handle_text_input("side_a");
+        assert_eq!(editor3.handle_key(Keycode::Return), None);
+        assert!(editor3.confirming_overwrite);
+        assert_eq!(editor3.handle_key(Keycode::V), Some(true));
+        assert_eq!(editor3.name, "side_a_1");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 fn draw_deck_monitor(
@@ -1509,16 +2376,18 @@ fn draw_deck_monitor(
     preview_paused: bool,
     meter_levels: Option<(usize, usize)>,
 ) -> Result<(), String> {
-    fill(canvas, Rect::new(187, 53, 124, 154), PANEL)?;
-    text(canvas, 194, 58, "OUTPUT LEVEL", 1, CREAM)?;
-    text(canvas, 194, 73, "L", 1, DIM)?;
-    meter(canvas, 203, 73, meter_levels.map_or(0, |levels| levels.0))?;
-    text(canvas, 194, 86, "R", 1, DIM)?;
-    meter(canvas, 203, 86, meter_levels.map_or(0, |levels| levels.1))?;
-    text(canvas, 203, 97, "-40  -20  -6   0", 1, DIM)?;
+    fill(canvas, Rect::new(187, 37, 124, 170), PANEL)?;
+    text(canvas, 194, 42, "OUTPUT LEVEL", 1, CREAM)?;
+    canvas.set_draw_color(DIM);
+    canvas.draw_line((194, 52), (305, 52))?;
+    text(canvas, 194, 58, "L", 1, DIM)?;
+    meter(canvas, 203, 58, meter_levels.map_or(0, |levels| levels.0))?;
+    text(canvas, 194, 71, "R", 1, DIM)?;
+    meter(canvas, 203, 71, meter_levels.map_or(0, |levels| levels.1))?;
+    text(canvas, 203, 82, "-40  -20  -6   0", 1, DIM)?;
 
-    text(canvas, 194, 112, "TAPE DECK", 1, AMBER)?;
-    draw_cassette(canvas, 196, 124)?;
+    text(canvas, 194, 100, "TAPE DECK", 1, AMBER)?;
+    draw_cassette(canvas, 196, 114)?;
     let (status, color) = if previewing && preview_paused {
         ("PREVIEW PAUSE", AMBER)
     } else if previewing {
@@ -1528,32 +2397,31 @@ fn draw_deck_monitor(
     } else {
         ("MONITOR IDLE", PHOSPHOR)
     };
-    text(canvas, 211, 159, status, 1, color)?;
+    text(canvas, 211, 153, status, 1, color)?;
     Ok(())
 }
 
 fn draw_selected_panel(
     canvas: &mut Canvas<Window>,
     tracks: &[AudioTrack],
-    selected: &[bool],
+    selection_order: &[usize],
     cursor: usize,
     focus_elapsed: Duration,
     profile: &RuntimeProfile,
 ) -> Result<(), String> {
-    fill(canvas, Rect::new(187, 53, 124, 154), PANEL)?;
-    text(canvas, 194, 58, "SELECTED", 1, AMBER)?;
-    let selected_tracks: Vec<(usize, &AudioTrack)> = tracks
+    fill(canvas, Rect::new(187, 37, 124, 170), PANEL)?;
+    text(canvas, 194, 42, "SELECTED", 1, AMBER)?;
+    canvas.set_draw_color(DIM);
+    canvas.draw_line((194, 52), (305, 52))?;
+    let selected_tracks: Vec<(usize, &AudioTrack)> = selection_order
         .iter()
-        .enumerate()
-        .zip(selected)
-        .filter(|(_, is_selected)| **is_selected)
-        .map(|((index, track), _)| (index, track))
+        .filter_map(|&source_index| tracks.get(source_index).map(|track| (source_index, track)))
         .collect();
     if selected_tracks.is_empty() {
-        text(canvas, 194, 82, "NONE", 1, DIM)?;
+        text(canvas, 194, 66, "NONE", 1, DIM)?;
     } else {
-        for (index, (source_index, track)) in selected_tracks.iter().take(5).enumerate() {
-            let y = 75 + index as i32 * 17;
+        for (index, (source_index, track)) in selected_tracks.iter().take(6).enumerate() {
+            let y = 57 + index as i32 * 17;
             let highlighted = *source_index == cursor;
             let name = compact_track_name_scrolling(
                 &track.name,
@@ -1603,7 +2471,7 @@ fn draw_selected_panel(
     text(
         canvas,
         194,
-        174,
+        169,
         &format!("TOTAL {:02}:{:02}", total_seconds / 60, total_seconds % 60),
         1,
         total_color,
@@ -1611,7 +2479,7 @@ fn draw_selected_panel(
     text(
         canvas,
         194,
-        185,
+        181,
         &format!("MAX   {:02}:00", profile.side_duration_minutes),
         1,
         DIM,
@@ -1619,7 +2487,7 @@ fn draw_selected_panel(
     text(
         canvas,
         194,
-        195,
+        193,
         &format!("{} TRACKS", selected_tracks.len()),
         1,
         DIM,
@@ -1671,7 +2539,13 @@ fn draw_cassette(canvas: &mut Canvas<Window>, x: i32, y: i32) -> Result<(), Stri
 fn meter(canvas: &mut Canvas<Window>, x: i32, y: i32, level: usize) -> Result<(), String> {
     for index in 0..14 {
         let color = if index < level {
-            if index > 11 { RED } else { PHOSPHOR }
+            if index >= 12 {
+                RED
+            } else if index >= 9 {
+                AMBER
+            } else {
+                PHOSPHOR
+            }
         } else {
             Color::RGB(48, 55, 50)
         };
@@ -1731,7 +2605,7 @@ fn text(
     color: Color,
 ) -> Result<(), String> {
     let mut cursor = x;
-    for character in value.to_ascii_uppercase().chars() {
+    for character in value.chars() {
         for (row, bits) in glyph(character).iter().enumerate() {
             for column in 0..5 {
                 if bits & (1 << (4 - column)) != 0 {
@@ -1781,6 +2655,32 @@ fn glyph(character: char) -> [u8; 7] {
         'X' => [17, 17, 10, 4, 10, 17, 17],
         'Y' => [17, 17, 10, 4, 4, 4, 4],
         'Z' => [31, 1, 2, 4, 8, 16, 31],
+        'a' => [0, 0, 14, 1, 15, 17, 15],
+        'b' => [16, 16, 22, 25, 17, 17, 30],
+        'c' => [0, 0, 14, 17, 16, 17, 14],
+        'd' => [1, 1, 13, 19, 17, 17, 15],
+        'e' => [0, 0, 14, 17, 31, 16, 14],
+        'f' => [6, 9, 8, 28, 8, 8, 8],
+        'g' => [0, 0, 15, 17, 15, 1, 14],
+        'h' => [16, 16, 22, 25, 17, 17, 17],
+        'i' => [4, 0, 12, 4, 4, 4, 14],
+        'j' => [2, 0, 6, 2, 2, 18, 12],
+        'k' => [16, 16, 18, 20, 24, 20, 18],
+        'l' => [12, 4, 4, 4, 4, 4, 14],
+        'm' => [0, 0, 26, 21, 21, 17, 17],
+        'n' => [0, 0, 22, 25, 17, 17, 17],
+        'o' => [0, 0, 14, 17, 17, 17, 14],
+        'p' => [0, 0, 30, 17, 30, 16, 16],
+        'q' => [0, 0, 15, 17, 15, 1, 1],
+        'r' => [0, 0, 22, 25, 16, 16, 16],
+        's' => [0, 0, 15, 16, 14, 1, 30],
+        't' => [8, 8, 28, 8, 8, 9, 6],
+        'u' => [0, 0, 17, 17, 17, 19, 13],
+        'v' => [0, 0, 17, 17, 17, 10, 4],
+        'w' => [0, 0, 17, 17, 21, 21, 10],
+        'x' => [0, 0, 17, 10, 4, 10, 17],
+        'y' => [0, 0, 17, 17, 15, 1, 14],
+        'z' => [0, 0, 31, 2, 4, 8, 31],
         '0' => [14, 17, 19, 21, 25, 17, 14],
         '1' => [4, 12, 4, 4, 4, 4, 14],
         '2' => [14, 17, 1, 2, 4, 8, 31],
@@ -1793,12 +2693,21 @@ fn glyph(character: char) -> [u8; 7] {
         '9' => [14, 17, 17, 15, 1, 1, 14],
         ':' => [0, 4, 4, 0, 4, 4, 0],
         '-' => [0, 0, 0, 31, 0, 0, 0],
+        '_' => [0, 0, 0, 0, 0, 0, 31],
         '?' => [14, 17, 1, 2, 4, 0, 4],
         '|' => [4, 4, 4, 4, 4, 4, 4],
         '/' => [1, 1, 2, 4, 8, 16, 16],
+        '\\' => [16, 16, 8, 4, 2, 1, 1],
         '[' => [14, 8, 8, 8, 8, 8, 14],
         ']' => [14, 2, 2, 2, 2, 2, 14],
+        '<' => [2, 4, 8, 16, 8, 4, 2],
         '>' => [16, 8, 4, 2, 4, 8, 16],
+        '(' => [2, 4, 8, 8, 8, 4, 2],
+        ')' => [8, 4, 2, 2, 2, 4, 8],
+        '+' => [0, 4, 4, 31, 4, 4, 0],
+        '~' => [0, 13, 18, 0, 0, 0, 0],
+        '=' => [0, 0, 31, 0, 31, 0, 0],
+        ',' => [0, 0, 0, 0, 0, 12, 4],
         '.' => [0, 0, 0, 0, 0, 12, 12],
         _ => [0; 7],
     }

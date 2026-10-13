@@ -203,6 +203,26 @@ impl RuntimeProfile {
         }
         result.map(|()| path)
     }
+
+    pub fn list_profiles(folder: impl AsRef<Path>) -> Result<Vec<PathBuf>, String> {
+        let folder = folder.as_ref();
+        if !folder.exists() {
+            return Ok(Vec::new());
+        }
+        let mut files: Vec<PathBuf> = fs::read_dir(folder)
+            .map_err(|error| format!("failed to read {}: {error}", folder.display()))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map_or(false, |name| !name.starts_with('.'))
+            })
+            .collect();
+        files.sort();
+        Ok(files)
+    }
 }
 
 #[cfg(test)]
@@ -243,6 +263,8 @@ mod tests {
                 ))
                 .exists()
         );
+        let listed = RuntimeProfile::list_profiles(&folder).unwrap();
+        assert_eq!(listed, vec![path]);
         fs::remove_dir_all(folder).unwrap();
     }
 }

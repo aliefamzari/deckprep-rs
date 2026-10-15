@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
 
 use sdl2::{
     keyboard::Keycode,
@@ -132,7 +135,7 @@ impl ProfileBrowser {
                 canvas,
                 34,
                 y,
-                &compact_track_name(name, 35),
+                &auto_scroll_text(name, 35),
                 1,
                 if index == self.cursor {
                     PHOSPHOR
@@ -223,7 +226,7 @@ impl QueueBrowser {
                 canvas,
                 34,
                 y,
-                &compact_track_name(name, 35),
+                &auto_scroll_text(name, 35),
                 1,
                 if index == self.cursor {
                     PHOSPHOR
@@ -306,7 +309,7 @@ impl QueueNameEditor {
                 canvas,
                 36,
                 94,
-                &compact_track_name(&format!("{}.json", self.name), 38),
+                &auto_scroll_text(&format!("{}.json", self.name), 38),
                 1,
                 PHOSPHOR,
             )?;
@@ -322,7 +325,14 @@ impl QueueNameEditor {
         } else {
             text(canvas, 38, 80, "SAVE QUEUE", 2, PHOSPHOR)?;
             text(canvas, 38, 104, "NAME", 1, CREAM)?;
-            text(canvas, 38, 120, &format!("{}_", self.name), 1, AMBER)?;
+            text(
+                canvas,
+                38,
+                120,
+                &auto_scroll_text(&format!("{}_", self.name), 42),
+                1,
+                AMBER,
+            )?;
             text(canvas, 38, 144, "ENTER SAVE   ESC CANCEL", 1, DIM)?;
         }
         Ok(())
@@ -475,10 +485,11 @@ impl NormalizationReview {
                     Color::RGB(42, 48, 43),
                 )?;
             }
-            let display_name = visible_track_name(
+            let display_name = track_name_text(
                 name,
+                22,
                 index == self.cursor,
-                marquee_offset(self.focus_changed_at.elapsed(), name.chars().count()),
+                self.focus_changed_at.elapsed(),
             );
             text(
                 canvas,
@@ -544,7 +555,14 @@ impl NormalizationReview {
         text(canvas, 104, 215, "X STOP", 1, RED)?;
         text(canvas, 160, 215, "ENTER NEXT", 1, AMBER)?;
         if !self.preview_status.is_empty() {
-            text(canvas, 235, 215, &self.preview_status, 1, PHOSPHOR)?;
+            text(
+                canvas,
+                235,
+                215,
+                &auto_scroll_text(&self.preview_status, 12),
+                1,
+                PHOSPHOR,
+            )?;
         }
         text(
             canvas,
@@ -784,31 +802,12 @@ impl ProfileEditor {
                 CREAM
             };
 
-            let display_val = if *is_text {
-                if highlighted {
-                    let with_cursor = format!("{value}_");
-                    if with_cursor.chars().count() > 24 {
-                        let chars: Vec<char> = with_cursor.chars().collect();
-                        format!(
-                            "...{}",
-                            chars[chars.len() - 21..].iter().collect::<String>()
-                        )
-                    } else {
-                        with_cursor
-                    }
-                } else if value.is_empty() {
-                    "(none)".to_owned()
-                } else if value.chars().count() > 24 {
-                    let chars: Vec<char> = value.chars().collect();
-                    format!(
-                        "...{}",
-                        chars[chars.len() - 21..].iter().collect::<String>()
-                    )
-                } else {
-                    value.clone()
-                }
+            let display_val = if *is_text && highlighted {
+                auto_scroll_text(&format!("{value}_"), 26)
+            } else if *is_text && value.is_empty() {
+                "(none)".to_owned()
             } else {
-                value.clone()
+                auto_scroll_text(value, 26)
             };
 
             text(canvas, 154, row_y, &display_val, 1, val_color)?;
@@ -1040,19 +1039,21 @@ impl AppUi {
         fill(canvas, Rect::new(9, 9, 302, 25), PANEL)?;
         text(canvas, 14, 13, "DECKPREP", 2, PHOSPHOR)?;
         text(canvas, 121, 14, "TAPE RECORDING CONSOLE", 1, CREAM)?;
+        text(canvas, 121, 24, "PROFILE:", 1, AMBER)?;
         text(
             canvas,
-            121,
+            169,
             24,
-            &compact_track_name(&format!("PROFILE: {}", profile.name), 17),
+            &auto_scroll_text(&profile.name, 9),
             1,
             AMBER,
         )?;
+        text(canvas, 227, 24, "DAC:", 1, DIM)?;
         text(
             canvas,
-            227,
+            251,
             24,
-            &compact_track_name(&format!("DAC: {}", profile.audio_device), 12),
+            &auto_scroll_text(&profile.audio_device, 9),
             1,
             DIM,
         )?;
@@ -1095,7 +1096,7 @@ impl AppUi {
         tiny_text(canvas, 249, 218, "PREP ENT", Color::RGB(220, 104, 190))?;
         tiny_text(canvas, 290, 218, "?", Color::RGB(246, 208, 82))?;
         if let Some(status) = self.current_status() {
-            text(canvas, 14, 205, status, 1, AMBER)?;
+            text(canvas, 14, 205, &auto_scroll_text(status, 48), 1, AMBER)?;
         }
 
         Ok(())
@@ -1145,7 +1146,12 @@ impl AppUi {
                 canvas,
                 50,
                 y,
-                &compact_track_name(&track.name, 10),
+                &track_name_text(
+                    &track.name,
+                    10,
+                    highlighted,
+                    self.focus_changed_at.elapsed(),
+                ),
                 1,
                 color,
             )?;
@@ -1198,7 +1204,12 @@ impl AppUi {
                 canvas,
                 185,
                 y,
-                &compact_track_name(&track.name, 10),
+                &track_name_text(
+                    &track.name,
+                    10,
+                    highlighted,
+                    self.focus_changed_at.elapsed(),
+                ),
                 1,
                 color,
             )?;
@@ -1240,7 +1251,7 @@ impl AppUi {
             DIM,
         )?;
         if let Some(status) = self.current_status() {
-            text(canvas, 14, 197, status, 1, AMBER)?;
+            text(canvas, 14, 197, &auto_scroll_text(status, 48), 1, AMBER)?;
         }
         fill(canvas, Rect::new(9, 207, 302, 24), PANEL)?;
         tiny_text(canvas, 16, 216, "TAB CLOSE", AMBER)?;
@@ -1270,24 +1281,26 @@ impl AppUi {
         fill(canvas, Rect::new(9, 9, 302, 25), PANEL)?;
         text(canvas, 14, 13, "DECKPREP", 2, PHOSPHOR)?;
         text(canvas, 121, 14, "DECK RECORDING MODE", 1, CREAM)?;
+        text(canvas, 121, 24, "PROFILE:", 1, AMBER)?;
         text(
             canvas,
-            121,
+            169,
             24,
-            &compact_track_name(&format!("PROFILE: {}", profile.name), 17),
+            &auto_scroll_text(&profile.name, 9),
             1,
             AMBER,
         )?;
+        text(canvas, 227, 24, "DAC:", 1, DIM)?;
         text(
             canvas,
-            227,
+            251,
             24,
-            &compact_track_name(&format!("DAC: {}", profile.audio_device), 12),
+            &auto_scroll_text(&profile.audio_device, 9),
             1,
             DIM,
         )?;
 
-        text(canvas, 14, 43, phase, 1, AMBER)?;
+        text(canvas, 14, 43, &auto_scroll_text(phase, 48), 1, AMBER)?;
         let total = total_seconds.max(1);
         let progress = elapsed_seconds.min(total);
         let remaining = total.saturating_sub(progress);
@@ -1330,7 +1343,7 @@ impl AppUi {
 
         let current_label = current_track
             .and_then(|index| track_names.get(index))
-            .map(|name| marquee_track_name(name, 45, marquee_elapsed))
+            .map(|name| scrolling_text(name, 45, marquee_elapsed))
             .unwrap_or_else(|| "STANDBY".to_owned());
         text(canvas, 14, 137, "NOW PLAYING", 1, AMBER)?;
         text(canvas, 14, 148, &current_label, 1, PHOSPHOR)?;
@@ -1354,11 +1367,8 @@ impl AppUi {
             } else {
                 CREAM
             };
-            let display_name = if current_track == Some(index) {
-                marquee_track_name(name, 23, marquee_elapsed)
-            } else {
-                clipped_track_name(name, 23)
-            };
+            let display_name =
+                track_name_text(name, 23, current_track == Some(index), marquee_elapsed);
             if current_track == Some(index) {
                 fill(
                     canvas,
@@ -1531,7 +1541,7 @@ fn draw_tape_reels(
     let right_speed = 3.5 - (ratio * 1.5);
     let elapsed_sec = elapsed.as_secs_f64();
     let left_angle = if rotating {
-        elapsed_sec * left_speed
+        -elapsed_sec * left_speed
     } else {
         0.0
     };
@@ -1980,10 +1990,11 @@ fn draw_tracks(
         let color = if index == cursor { PHOSPHOR } else { CREAM };
         text(canvas, 15, y, marker, 1, color)?;
         text(canvas, 38, y, &format!("{:02}", index + 1), 1, color)?;
-        let display_name = visible_track_name(
+        let display_name = track_name_text(
             &track.name,
+            TRACK_NAME_WIDTH,
             index == cursor,
-            marquee_offset(focus_elapsed, track.name.chars().count()),
+            focus_elapsed,
         );
         text(canvas, 56, y, &display_name, 1, color)?;
         text(
@@ -2007,55 +2018,52 @@ fn draw_tracks(
     Ok(())
 }
 
-fn visible_track_name(name: &str, highlighted: bool, offset: usize) -> String {
-    let characters: Vec<char> = name.chars().collect();
-    if characters.len() <= TRACK_NAME_WIDTH {
-        return characters.into_iter().collect();
-    }
-    if !highlighted {
-        return characters[..TRACK_NAME_WIDTH - 1]
-            .iter()
-            .chain(std::iter::once(&'.'))
-            .collect();
-    }
-
-    let padded: Vec<char> = format!("{name}   ").chars().collect();
-    (0..TRACK_NAME_WIDTH)
-        .map(|index| padded[(offset + index) % padded.len()])
-        .collect()
+fn auto_scroll_text(value: &str, width: usize) -> String {
+    static START: OnceLock<Instant> = OnceLock::new();
+    scrolling_text(value, width, START.get_or_init(Instant::now).elapsed())
 }
 
-fn clipped_track_name(name: &str, width: usize) -> String {
-    let characters: Vec<char> = name.chars().collect();
-    if characters.len() <= width {
-        return characters.into_iter().collect();
+fn scrolling_text(value: &str, width: usize, elapsed: Duration) -> String {
+    if width == 0 {
+        return String::new();
     }
-    characters[..width.saturating_sub(1)]
-        .iter()
-        .chain(std::iter::once(&'.'))
-        .collect()
-}
-
-fn marquee_track_name(name: &str, width: usize, elapsed: Duration) -> String {
-    let characters: Vec<char> = name.chars().collect();
+    let characters: Vec<char> = value.chars().collect();
     if characters.len() <= width {
         return characters.into_iter().collect();
     }
     if elapsed < Duration::from_millis(900) {
-        return clipped_track_name(name, width);
+        return characters[..width.saturating_sub(1)]
+            .iter()
+            .chain(std::iter::once(&'.'))
+            .collect();
     }
-    let padded: Vec<char> = format!("{name}    ").chars().collect();
+    let padded: Vec<char> = format!("{value}    ").chars().collect();
     let offset = ((elapsed - Duration::from_millis(900)).as_millis() / 160) as usize;
     (0..width)
         .map(|index| padded[(offset + index) % padded.len()])
         .collect()
 }
 
-fn marquee_offset(elapsed: Duration, name_length: usize) -> usize {
-    if name_length <= TRACK_NAME_WIDTH || elapsed < Duration::from_millis(900) {
-        return 0;
+fn track_name_text(name: &str, width: usize, highlighted: bool, elapsed: Duration) -> String {
+    if highlighted {
+        scrolling_text(name, width, elapsed)
+    } else {
+        clipped_text(name, width)
     }
-    ((elapsed - Duration::from_millis(900)).as_millis() / 180) as usize
+}
+
+fn clipped_text(value: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let characters: Vec<char> = value.chars().collect();
+    if characters.len() <= width {
+        return characters.into_iter().collect();
+    }
+    characters[..width - 1]
+        .iter()
+        .chain(std::iter::once(&'.'))
+        .collect()
 }
 
 fn draw_scrollbar(
@@ -2125,18 +2133,32 @@ mod tests {
     }
 
     #[test]
-    fn clips_unfocused_long_names() {
+    fn long_variable_text_scrolls_after_initial_pause() {
         assert_eq!(
-            visible_track_name("a-very-long-track-name.flac", false, 0),
-            "a-very-long-t."
+            scrolling_text("abcdefghijklmnop", 8, Duration::ZERO),
+            "abcdefg."
+        );
+        assert_eq!(
+            scrolling_text("abcdefghijklmnop", 8, Duration::from_millis(1060)),
+            "bcdefghi"
         );
     }
 
     #[test]
-    fn highlighted_long_names_scroll() {
+    fn short_variable_text_is_not_scrolled() {
+        assert_eq!(scrolling_text("short", 8, Duration::from_secs(10)), "short");
+    }
+
+    #[test]
+    fn only_highlighted_track_names_scroll() {
+        let name = "abcdefghijklmnop";
         assert_eq!(
-            visible_track_name("abcdefghijklmnop", true, 3),
-            "defghijklmnop "
+            track_name_text(name, 8, false, Duration::from_secs(10)),
+            "abcdefg."
+        );
+        assert_eq!(
+            track_name_text(name, 8, true, Duration::from_millis(1060)),
+            "bcdefghi"
         );
     }
 
@@ -2423,12 +2445,7 @@ fn draw_selected_panel(
         for (index, (source_index, track)) in selected_tracks.iter().take(6).enumerate() {
             let y = 57 + index as i32 * 17;
             let highlighted = *source_index == cursor;
-            let name = compact_track_name_scrolling(
-                &track.name,
-                10,
-                highlighted,
-                marquee_offset(focus_elapsed, track.name.chars().count()),
-            );
+            let name = track_name_text(&track.name, 10, highlighted, focus_elapsed);
             if highlighted {
                 fill(
                     canvas,
@@ -2493,36 +2510,6 @@ fn draw_selected_panel(
         DIM,
     )?;
     Ok(())
-}
-
-fn compact_track_name(name: &str, width: usize) -> String {
-    let characters: Vec<char> = name.chars().collect();
-    if characters.len() <= width {
-        return characters.into_iter().collect();
-    }
-    characters[..width.saturating_sub(1)]
-        .iter()
-        .chain(std::iter::once(&'.'))
-        .collect()
-}
-
-fn compact_track_name_scrolling(
-    name: &str,
-    width: usize,
-    highlighted: bool,
-    offset: usize,
-) -> String {
-    let characters: Vec<char> = name.chars().collect();
-    if characters.len() <= width {
-        return characters.into_iter().collect();
-    }
-    if !highlighted {
-        return compact_track_name(name, width);
-    }
-    let padded: Vec<char> = format!("{name}   ").chars().collect();
-    (0..width)
-        .map(|index| padded[(offset + index) % padded.len()])
-        .collect()
 }
 
 fn draw_cassette(canvas: &mut Canvas<Window>, x: i32, y: i32) -> Result<(), String> {

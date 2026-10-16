@@ -712,6 +712,7 @@ fn main() -> Result<(), String> {
             }
         }
 
+        let was_test_tone = ui.test_tone_status().is_some();
         if let Some(session) = prep_session.as_mut() {
             match session.tick(&mut player, &profile) {
                 Ok(SessionTickResult::Continuing) => {
@@ -735,6 +736,12 @@ fn main() -> Result<(), String> {
             ui.set_previewing(player.current_path().is_some(), player.is_paused());
         }
 
+        ui.sync_test_tone_preview(player.current_path(), player.is_paused());
+        if was_test_tone && ui.test_tone_status().is_none() {
+            if let Some(active_review) = review.as_mut() {
+                active_review.preview_status.clear();
+            }
+        }
         let meter_levels = preview_meter
             .as_ref()
             .map(|meter| meter.level_at(player.position_seconds()));
@@ -753,7 +760,7 @@ fn main() -> Result<(), String> {
         } else if let Some(active_editor) = editor.as_ref() {
             active_editor.render(&mut canvas)?;
         } else if let Some(active_review) = review.as_ref() {
-            active_review.render(&mut canvas, &profile, meter_levels)?;
+            active_review.render(&mut canvas, &profile, meter_levels, ui.test_tone_status())?;
         } else {
             ui.render(&mut canvas, &profile, meter_levels)?;
         }
@@ -892,7 +899,8 @@ fn play_test_tone_preview(
     }
     *preview_meter = Some(StereoMeter::analyze(&tone_path)?);
     let label = format!("TONE {}", tone.label());
-    ui.set_normalization_status(format!("TEST {}", label));
+    ui.set_test_tone_preview(&tone_path, tone);
+    ui.sync_test_tone_preview(player.current_path(), player.is_paused());
     if let Some(active_review) = review.as_mut() {
         active_review.preview_status = label;
     }

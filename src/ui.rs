@@ -16,6 +16,7 @@ use crate::{
     library::AudioTrack,
     queue::{match_tracks_ordered, next_queue_version, queue_exists},
     timing::SessionPlan,
+    tone::TestTone,
 };
 
 const BACKGROUND: Color = Color::RGB(12, 15, 16);
@@ -40,6 +41,8 @@ pub struct AppUi {
     preview_paused: bool,
     normalization_status: String,
     status_updated_at: Option<Instant>,
+    test_tone_preview: Option<(std::path::PathBuf, TestTone)>,
+    test_tone_status: Option<String>,
     capacity_warning_started: Option<Instant>,
     prep_requested: bool,
     focus_changed_at: Instant,
@@ -669,6 +672,7 @@ impl NormalizationReview {
         canvas: &mut Canvas<Window>,
         profile: &RuntimeProfile,
         meter_levels: Option<(usize, usize)>,
+        test_tone_status: Option<&str>,
     ) -> Result<(), String> {
         canvas.set_draw_color(BACKGROUND);
         canvas.clear();
@@ -686,15 +690,19 @@ impl NormalizationReview {
             2,
             PHOSPHOR,
         )?;
-        text(canvas, 14, 43, "REVIEW TRACKS BEFORE COUNTDOWN", 1, CREAM)?;
-        text(
-            canvas,
-            210,
-            43,
-            &format!("{} TRACKS", self.tracks.len()),
-            1,
-            AMBER,
-        )?;
+        if let Some(status) = test_tone_status {
+            text(canvas, 14, 43, &auto_scroll_text(status, 48), 1, AMBER)?;
+        } else {
+            text(canvas, 14, 43, "REVIEW TRACKS BEFORE COUNTDOWN", 1, CREAM)?;
+            text(
+                canvas,
+                210,
+                43,
+                &format!("{} TRACKS", self.tracks.len()),
+                1,
+                AMBER,
+            )?;
+        }
 
         let visible_end = (self.viewport_start + 7).min(self.tracks.len());
         for (row, (name, duration, cache_hit)) in self.tracks[self.viewport_start..visible_end]
@@ -1095,6 +1103,8 @@ impl AppUi {
             preview_paused: false,
             normalization_status: String::new(),
             status_updated_at: None,
+            test_tone_preview: None,
+            test_tone_status: None,
             capacity_warning_started: None,
             prep_requested: false,
             focus_changed_at: Instant::now(),
@@ -1166,8 +1176,36 @@ impl AppUi {
     }
 
     pub fn set_previewing(&mut self, previewing: bool, paused: bool) {
+        if !previewing {
+            self.test_tone_preview = None;
+            self.test_tone_status = None;
+        }
         self.previewing = previewing;
         self.preview_paused = paused;
+    }
+
+    pub fn set_test_tone_preview(&mut self, path: &std::path::Path, tone: TestTone) {
+        self.test_tone_preview = Some((path.to_path_buf(), tone));
+        self.sync_test_tone_preview(Some(path), false);
+    }
+
+    pub fn sync_test_tone_preview(&mut self, current_path: Option<&std::path::Path>, paused: bool) {
+        if let Some((path, tone)) = &self.test_tone_preview {
+            if current_path == Some(path.as_path()) {
+                self.test_tone_status = Some(format!(
+                    "{} TEST TONE {}",
+                    if paused { "PAUSED" } else { "PLAYING" },
+                    tone.label()
+                ));
+            } else {
+                self.test_tone_preview = None;
+                self.test_tone_status = None;
+            }
+        }
+    }
+
+    pub fn test_tone_status(&self) -> Option<&str> {
+        self.test_tone_status.as_deref()
     }
 
     pub fn set_selected_panel(&mut self, visible: bool) {
@@ -1191,6 +1229,8 @@ impl AppUi {
     }
 
     pub fn reset_library(&mut self, tracks: Vec<AudioTrack>, error: Option<String>) {
+        self.test_tone_preview = None;
+        self.test_tone_status = None;
         self.queue_name = None;
         self.capacity_warning_started = None;
         self.tracks = tracks;
@@ -1247,6 +1287,9 @@ impl AppUi {
     }
 
     pub fn current_status(&self) -> Option<&str> {
+        if let Some(status) = self.test_tone_status() {
+            return Some(status);
+        }
         if let Some(timestamp) = self.status_updated_at {
             if timestamp.elapsed() < STATUS_TIMEOUT && !self.normalization_status.is_empty() {
                 return Some(&self.normalization_status);
@@ -2607,6 +2650,44 @@ mod tests {
         assert_eq!(ui.current_status(), Some("ANOTHER STATUS"));
         ui.clear_normalization_status();
         assert_eq!(ui.current_status(), None);
+    }
+
+    #[test]
+    fn test_tone_status_stays_visible_past_notification_timeout() {
+        let mut ui = AppUi::new(tracks(1), None);
+        let path = std::path::Path::new("tones/tone_400hz.wav");
+        ui.set_test_tone_preview(path, TestTone::Hz400);
+        ui.set_normalization_status("OTHER NOTICE");
+        ui.status_updated_at = Some(Instant::now() - Duration::from_secs(4));
+        assert_eq!(ui.current_status(), Some("PLAYING TEST TONE 400Hz (Level)"));
+        ui.clear_normalization_status();
+        assert_eq!(ui.current_status(), Some("PLAYING TEST TONE 400Hz (Level)"));
+        ui.sync_test_tone_preview(Some(path), true);
+        assert_eq!(ui.current_status(), Some("PAUSED TEST TONE 400Hz (Level)"));
+        ui.sync_test_tone_preview(Some(path), false);
+        assert_eq!(ui.current_status(), Some("PLAYING TEST TONE 400Hz (Level)"));
+        ui.sync_test_tone_preview(None, false);
+        assert_eq!(ui.current_status(), None);
+    }
+
+    #[test]
+    fn test_tone_status_clears_on_track_switch_stop_and_library_reset() {
+        let mut ui = AppUi::new(tracks(1), None);
+        let path = std::path::Path::new("tones/tone_400hz.wav");
+        ui.set_test_tone_preview(path, TestTone::Hz400);
+        ui.sync_test_tone_preview(Some(std::path::Path::new("music.flac")), false);
+        assert_eq!(ui.test_tone_status(), None);
+        ui.set_test_tone_preview(path, TestTone::Hz400);
+        ui.set_previewing(false, false);
+        assert_eq!(ui.test_tone_status(), None);
+        ui.set_test_tone_preview(path, TestTone::Hz400);
+        ui.reset_library(tracks(1), None);
+        assert_eq!(ui.test_tone_status(), None);
+        ui.set_test_tone_preview(path, TestTone::Hz400);
+        let next_path = std::path::Path::new("tones/tone_1000hz.wav");
+        ui.set_test_tone_preview(next_path, TestTone::Hz1000);
+        ui.sync_test_tone_preview(Some(next_path), false);
+        assert_eq!(ui.current_status(), Some("PLAYING TEST TONE 1kHz (Ref)"));
     }
 
     fn folder_browser_fixture() -> PathBuf {

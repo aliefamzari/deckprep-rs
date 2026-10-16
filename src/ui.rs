@@ -492,6 +492,76 @@ pub struct NormalizationReview {
     pub focus_changed_at: Instant,
 }
 
+pub struct NormalizationProgress {
+    pub total: usize,
+    pub completed: usize,
+    pub current_index: usize,
+    pub current_track: String,
+    pub cache_hits: usize,
+    pub method: NormalizationMethod,
+    pub cancelling: bool,
+    pub started_at: Instant,
+}
+
+impl NormalizationProgress {
+    pub fn render(&self, canvas: &mut Canvas<Window>) -> Result<(), String> {
+        canvas.set_draw_color(BACKGROUND);
+        canvas.clear();
+        outline(canvas, Rect::new(6, 6, 308, 228), DIM)?;
+        text(canvas, 14, 14, "PREPARING TRACKS", 2, PHOSPHOR)?;
+        let stage = if self.cancelling {
+            "CANCELLING AFTER CURRENT TRACK"
+        } else {
+            match self.method {
+                NormalizationMethod::None => "USING ORIGINAL FILES",
+                NormalizationMethod::Peak => "CACHE / PEAK ANALYSIS / NORMALIZE",
+                NormalizationMethod::Lufs => "CACHE / LUFS NORMALIZATION",
+            }
+        };
+        text(canvas, 14, 48, stage, 1, AMBER)?;
+        text(
+            canvas,
+            14,
+            72,
+            &format!("TRACK {} OF {}", self.current_index + 1, self.total),
+            1,
+            CREAM,
+        )?;
+        text(
+            canvas,
+            14,
+            92,
+            &auto_scroll_text(&self.current_track, 48),
+            1,
+            PHOSPHOR,
+        )?;
+        outline(canvas, Rect::new(14, 118, 292, 14), DIM)?;
+        let width = (288 * self.completed / self.total.max(1)) as u32;
+        if width > 0 {
+            fill(canvas, Rect::new(16, 120, width, 10), PHOSPHOR)?;
+        }
+        text(
+            canvas,
+            14,
+            146,
+            &format!(
+                "READY {}/{}  CACHE {}",
+                self.completed, self.total, self.cache_hits
+            ),
+            1,
+            CREAM,
+        )?;
+        let pulse = if (self.started_at.elapsed().as_millis() / 350) % 2 == 0 {
+            "WORKING"
+        } else {
+            "WORKING ."
+        };
+        text(canvas, 14, 170, pulse, 1, DIM)?;
+        text(canvas, 14, 215, "ESC CANCEL", 1, RED)?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegendContext {
     Main,
@@ -603,7 +673,18 @@ impl NormalizationReview {
         canvas.clear();
         outline(canvas, Rect::new(6, 6, 308, 228), DIM)?;
         fill(canvas, Rect::new(9, 9, 302, 25), PANEL)?;
-        text(canvas, 14, 13, "NORMALIZATION COMPLETE", 2, PHOSPHOR)?;
+        text(
+            canvas,
+            14,
+            13,
+            if profile.normalization == NormalizationMethod::None {
+                "ORIGINAL TRACKS READY"
+            } else {
+                "NORMALIZATION COMPLETE"
+            },
+            2,
+            PHOSPHOR,
+        )?;
         text(canvas, 14, 43, "REVIEW TRACKS BEFORE COUNTDOWN", 1, CREAM)?;
         text(
             canvas,
@@ -620,7 +701,13 @@ impl NormalizationReview {
             .enumerate()
         {
             let index = self.viewport_start + row;
-            let status = if *cache_hit { "CACHE" } else { "NEW" };
+            let status = if profile.normalization == NormalizationMethod::None {
+                "ORIG"
+            } else if *cache_hit {
+                "CACHE"
+            } else {
+                "NEW"
+            };
             let color = if *cache_hit { DIM } else { PHOSPHOR };
             if index == self.cursor {
                 fill(
@@ -708,17 +795,15 @@ impl NormalizationReview {
                 PHOSPHOR,
             )?;
         }
-        text(
-            canvas,
-            14,
-            224,
-            &format!(
+        let normalization_label = if profile.normalization == NormalizationMethod::None {
+            "NORMALIZATION NONE / ORIGINAL FILES".to_owned()
+        } else {
+            format!(
                 "NORMALIZATION {:?}  TARGET {:+.1}",
                 profile.normalization, profile.target_lufs
-            ),
-            1,
-            DIM,
-        )?;
+            )
+        };
+        text(canvas, 14, 224, &normalization_label, 1, DIM)?;
         text(canvas, 274, 224, "? HELP", 1, AMBER)?;
         Ok(())
     }
@@ -975,17 +1060,13 @@ fn step_u32(value: u32, direction: i32, minimum: u32, maximum: u32) -> u32 {
 }
 
 fn cycle_normalization(value: NormalizationMethod, direction: i32) -> NormalizationMethod {
-    if direction > 0 {
-        match value {
-            NormalizationMethod::Peak => NormalizationMethod::Lufs,
-            NormalizationMethod::Lufs => NormalizationMethod::Peak,
-        }
-    } else {
-        match value {
-            NormalizationMethod::Peak => NormalizationMethod::Lufs,
-            NormalizationMethod::Lufs => NormalizationMethod::Peak,
-        }
-    }
+    let modes = [
+        NormalizationMethod::Peak,
+        NormalizationMethod::Lufs,
+        NormalizationMethod::None,
+    ];
+    let index = modes.iter().position(|mode| *mode == value).unwrap_or(0) as i32;
+    modes[(index + direction).rem_euclid(modes.len() as i32) as usize]
 }
 
 fn cycle_counter(value: CounterMode, direction: i32) -> CounterMode {
@@ -2617,6 +2698,34 @@ mod tests {
         editor.handle_key(Keycode::Left);
         assert_eq!(editor.profile.side_duration_minutes, 30);
         assert!(editor.handle_key(Keycode::Q));
+    }
+
+    #[test]
+    fn normalization_options_cycle_in_both_directions() {
+        assert_eq!(
+            cycle_normalization(NormalizationMethod::Peak, 1),
+            NormalizationMethod::Lufs
+        );
+        assert_eq!(
+            cycle_normalization(NormalizationMethod::Lufs, 1),
+            NormalizationMethod::None
+        );
+        assert_eq!(
+            cycle_normalization(NormalizationMethod::None, 1),
+            NormalizationMethod::Peak
+        );
+        assert_eq!(
+            cycle_normalization(NormalizationMethod::Peak, -1),
+            NormalizationMethod::None
+        );
+        assert_eq!(
+            cycle_normalization(NormalizationMethod::None, -1),
+            NormalizationMethod::Lufs
+        );
+        assert_eq!(
+            cycle_normalization(NormalizationMethod::Lufs, -1),
+            NormalizationMethod::Peak
+        );
     }
 
     #[test]

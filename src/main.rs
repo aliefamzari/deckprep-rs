@@ -7,18 +7,18 @@ use std::{
 use deckprep_rs::audio::{AudioPlayer, diagnose_audio};
 use deckprep_rs::library::scan_tracks;
 use deckprep_rs::meter::StereoMeter;
-use deckprep_rs::normalize::{NormalizationSettings, clean_stale_cache_files, normalize_track};
+use deckprep_rs::normalize::{
+    NormalizationEvent, NormalizationJob, NormalizationSettings, clean_stale_cache_files,
+    normalize_track,
+};
 use deckprep_rs::queue::{list_queues, load_queue, save_queue_named};
 use deckprep_rs::session::{PrepSession, SessionTickResult};
 use deckprep_rs::tone::{TestTone, generate_test_tone};
 use deckprep_rs::ui::{
-    AppUi, LegendContext, NormalizationReview, ProfileBrowser, ProfileEditor, QueueBrowser,
-    QueueNameEditor, TrackFolderBrowser, render_legend,
+    AppUi, LegendContext, NormalizationProgress, NormalizationReview, ProfileBrowser,
+    ProfileEditor, QueueBrowser, QueueNameEditor, TrackFolderBrowser, render_legend,
 };
-use deckprep_rs::{
-    config::{NormalizationMethod, RuntimeProfile},
-    timing::SessionPlan,
-};
+use deckprep_rs::{config::RuntimeProfile, timing::SessionPlan};
 use sdl2::{
     event::Event,
     keyboard::{Keycode, Mod},
@@ -90,6 +90,7 @@ fn main() -> Result<(), String> {
     let mut profile_browser: Option<ProfileBrowser> = None;
     let mut track_folder_browser: Option<TrackFolderBrowser> = None;
     let mut review: Option<NormalizationReview> = None;
+    let mut preparation: Option<TrackPreparation> = None;
     let mut prep_session: Option<PrepSession> = None;
     let mut legend: Option<LegendContext> = None;
     let mut shortcut_consumed_key = false;
@@ -98,6 +99,20 @@ fn main() -> Result<(), String> {
         let mut start_prep = false;
         let mut start_reviewed_prep = false;
         for event in events.poll_iter() {
+            if let Some(task) = preparation.as_mut() {
+                match event {
+                    Event::Quit { .. } => break 'running,
+                    Event::KeyDown {
+                        keycode: Some(Keycode::Escape | Keycode::Q),
+                        ..
+                    } => {
+                        task.job.cancel();
+                        task.progress.cancelling = true;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             if let Event::KeyDown {
                 keycode,
                 repeat: false,
@@ -517,7 +532,7 @@ fn main() -> Result<(), String> {
                                 player.seek_by(10.0, track.duration_seconds)?;
                             }
                         }
-                        Keycode::N => normalize_selected(&mut ui, &profile)?,
+                        Keycode::N => preparation = start_preparation(&mut ui, &profile, false),
                         Keycode::S => {
                             let path = profile.save_snapshot("profiles")?;
                             ui.set_normalization_status(format!(
@@ -578,6 +593,65 @@ fn main() -> Result<(), String> {
             }
         }
 
+        let mut preparation_finished = None;
+        if let Some(task) = preparation.as_mut() {
+            loop {
+                match task.job.poll() {
+                    Ok(NormalizationEvent::Processing { index, name }) => {
+                        task.progress.current_index = index;
+                        task.progress.current_track = name;
+                    }
+                    Ok(NormalizationEvent::Prepared(track)) => {
+                        task.progress.completed += 1;
+                        task.progress.cache_hits += usize::from(track.cache_hit);
+                        task.summaries.push((
+                            track.source.name,
+                            track.source.duration_seconds,
+                            track.cache_hit,
+                        ));
+                    }
+                    Ok(NormalizationEvent::Finished(result)) => {
+                        preparation_finished = Some(if task.progress.cancelling {
+                            Err("PREPARATION CANCELLED".to_owned())
+                        } else {
+                            result
+                        });
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        preparation_finished = Some(Err("PREPARATION WORKER STOPPED".to_owned()));
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(result) = preparation_finished {
+            if let Some(task) = preparation.take() {
+                match result {
+                    Ok(()) if task.review_after => {
+                        review = Some(NormalizationReview {
+                            tracks: task.summaries,
+                            total_seconds: task.total_seconds,
+                            capacity_seconds: task.capacity_seconds,
+                            preview_status: String::new(),
+                            cursor: 0,
+                            viewport_start: 0,
+                            focus_changed_at: Instant::now(),
+                        });
+                    }
+                    Ok(()) => ui.set_normalization_status(format!(
+                        "{:?} READY {}/{} CACHE {}",
+                        task.progress.method,
+                        task.progress.completed,
+                        task.progress.total,
+                        task.progress.cache_hits
+                    )),
+                    Err(error) => ui.set_normalization_status(error),
+                }
+            }
+        }
+
         if start_reviewed_prep {
             review = None;
             match PrepSession::start(&ui.selected_tracks(), &profile) {
@@ -596,7 +670,7 @@ fn main() -> Result<(), String> {
             }
         } else if start_prep {
             if review.is_none() {
-                review = build_normalization_review(&mut ui, &profile)?;
+                preparation = start_preparation(&mut ui, &profile, true);
             } else {
                 review = None;
                 match PrepSession::start(&ui.selected_tracks(), &profile) {
@@ -642,7 +716,9 @@ fn main() -> Result<(), String> {
         let meter_levels = preview_meter
             .as_ref()
             .map(|meter| meter.level_at(player.position_seconds()));
-        if let Some(session) = prep_session.as_ref() {
+        if let Some(task) = preparation.as_ref() {
+            task.progress.render(&mut canvas)?;
+        } else if let Some(session) = prep_session.as_ref() {
             session.render(&mut canvas, &ui, &profile, &player)?;
         } else if let Some(browser) = track_folder_browser.as_ref() {
             browser.render(&mut canvas)?;
@@ -677,48 +753,24 @@ fn reload_library(ui: &mut AppUi, profile: &RuntimeProfile) {
     ui.reset_library(tracks, error);
 }
 
-fn normalize_selected(ui: &mut AppUi, profile: &RuntimeProfile) -> Result<(), String> {
-    let selected = ui.selected_tracks();
-    if selected.is_empty() {
-        ui.set_normalization_status("SELECT TRACKS FIRST");
-        return Ok(());
-    }
-    let plan = SessionPlan::from_audio_tracks(profile, &selected);
-    if !plan.fits() {
-        ui.set_normalization_status(format!("OVER CAPACITY BY {}S", -plan.remaining_seconds()));
-        return Ok(());
-    }
-    let output_folder = Path::new(&profile.tracks_folder).join(&profile.normalized_folder);
-    let settings = NormalizationSettings {
-        method: profile.normalization,
-        target_lufs: profile.target_lufs,
-    };
-    let mut cache_hits = 0;
-    for track in &selected {
-        if normalize_track(track, &output_folder, settings)?.cache_hit {
-            cache_hits += 1;
-        }
-    }
-    let method = match profile.normalization {
-        NormalizationMethod::Peak => "PEAK",
-        NormalizationMethod::Lufs => "LUFS",
-    };
-    ui.set_normalization_status(format!(
-        "{method} READY {}/{} CACHE {cache_hits}",
-        selected.len(),
-        selected.len()
-    ));
-    Ok(())
+struct TrackPreparation {
+    job: NormalizationJob,
+    progress: NormalizationProgress,
+    summaries: Vec<(String, u32, bool)>,
+    total_seconds: u32,
+    capacity_seconds: u32,
+    review_after: bool,
 }
 
-fn build_normalization_review(
+fn start_preparation(
     ui: &mut AppUi,
     profile: &RuntimeProfile,
-) -> Result<Option<NormalizationReview>, String> {
+    review_after: bool,
+) -> Option<TrackPreparation> {
     let selected = ui.selected_tracks();
     if selected.is_empty() {
         ui.set_normalization_status("PREP BLOCKED: SELECT TRACKS");
-        return Ok(None);
+        return None;
     }
     let plan = SessionPlan::from_audio_tracks(profile, &selected);
     if !plan.fits() {
@@ -726,31 +778,38 @@ fn build_normalization_review(
             "PREP BLOCKED: OVER CAPACITY BY {}S",
             -plan.remaining_seconds()
         ));
-        return Ok(None);
+        return None;
     }
     let output_folder = Path::new(&profile.tracks_folder).join(&profile.normalized_folder);
     let settings = NormalizationSettings {
         method: profile.normalization,
         target_lufs: profile.target_lufs,
     };
-    let mut summaries = Vec::with_capacity(selected.len());
-    for track in &selected {
-        let normalized = normalize_track(track, &output_folder, settings)?;
-        summaries.push((
-            track.name.clone(),
-            track.duration_seconds,
-            normalized.cache_hit,
-        ));
-    }
-    Ok(Some(NormalizationReview {
-        tracks: summaries,
+    let progress = NormalizationProgress {
+        total: selected.len(),
+        completed: 0,
+        current_index: 0,
+        current_track: selected[0].name.clone(),
+        cache_hits: 0,
+        method: profile.normalization,
+        cancelling: false,
+        started_at: Instant::now(),
+    };
+    let job = match NormalizationJob::start(selected, output_folder, settings) {
+        Ok(job) => job,
+        Err(error) => {
+            ui.set_normalization_status(error);
+            return None;
+        }
+    };
+    Some(TrackPreparation {
+        job,
+        progress,
+        summaries: Vec::new(),
         total_seconds: plan.total_seconds(),
         capacity_seconds: plan.side_capacity_seconds,
-        preview_status: String::new(),
-        cursor: 0,
-        viewport_start: 0,
-        focus_changed_at: Instant::now(),
-    }))
+        review_after,
+    })
 }
 
 fn normalized_playback_path(

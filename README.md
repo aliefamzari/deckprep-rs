@@ -51,7 +51,7 @@ Controls:
 - `Tab`/`V`: open the dedicated track/queue workspace
 - `Left`/`Right` or `H`/`L`: seek backward/forward 10 seconds
 - `X`: stop preview
-- `N`: normalize all selected tracks into the configured cache folder
+- `N`: prepare selected tracks using the profile's normalization mode, with live progress
 - `Ctrl+S`: save the selected queue under `queues/`
 - `Ctrl+O`: browse saved queues; use `Up`/`Down` and `Enter` to load
 - `L`: browse and load deck profiles from `profiles/`; dynamically updates settings, tracks, and audio backend
@@ -76,6 +76,17 @@ Press `W` in the application to open the profile editor. Use `Up`/`Down` to sele
 a field, `Left`/`Right` to change numeric and enum values, and type to edit text
 fields. `Backspace` deletes text. Press `Ctrl+S` to save and close, or `Escape` to close
 without saving.
+
+The normalization field cycles through `Peak`, `Lufs`, and `None`. `None` uses
+the original files directly for preview and recording, without changing their
+gain, converting them, or creating normalized cache files. Profiles store this
+as `"normalization": "none"`; the terminal wizard also offers `none`.
+
+Both `N` and preparation with `Enter` display the current track, normalization
+mode, completed/total tracks, cache hits, and a track-based progress bar while
+working in the background. `Escape`/`Q` cancels after the current track finishes.
+Review identifies original tracks as `ORIG` and normalized tracks as `NEW` or
+`CACHE`. Preparation failures return to the main page with an error message.
 
 The tracks folder browser uses `Up`/`Down`, `Page Up`/`Page Down`, and `Home`/`End`
 to navigate folders, `Enter`/`Right` to open one, `Backspace`/`Left` to go to its
@@ -102,7 +113,8 @@ cargo check
 The GPIO/SCART profile does not configure GPIO pins, DPI overlays, sync, or 15 kHz
 timings. Those settings must be added and tested against the chosen interface hardware.
 
-Preview playback and prep playback use normalized cached WAV files. The current prep
+Preview playback and prep playback use normalized cached WAV files unless normalization
+is `none`, which plays the original files. The current prep
 workflow validates tape capacity, runs the countdown and leader gap, then plays the
 selected tracks with configured gaps. A dedicated counter/VU recording screen and
 tracklist export are included. The recording view shows a linear counter, progress,

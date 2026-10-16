@@ -52,6 +52,8 @@ The four intended stages are implemented:
 Additional workflow features:
 
 - Peak normalization and LUFS normalization through FFmpeg.
+- Optional `none` normalization in profiles, wizard, and editor uses original source files for preview and recording without conversion or normalized cache writes.
+- Background normalization for N and Enter shows the current file, method, completed-track progress, and cache hits; Escape/Q cancels between tracks. Review labels original files as ORIG; preparation failures return to the main screen.
 - SHA-256 normalization cache keys based on source metadata and settings.
 - Atomic normalized WAV cache writes under the configured normalized folder.
 - Tape capacity validation before preparation.

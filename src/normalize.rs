@@ -2,6 +2,12 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, TryRecvError},
+    },
+    thread::{self, JoinHandle},
     time::UNIX_EPOCH,
 };
 
@@ -22,6 +28,79 @@ pub struct NormalizedTrack {
     pub source: AudioTrack,
     pub path: PathBuf,
     pub cache_hit: bool,
+}
+
+pub enum NormalizationEvent {
+    Processing { index: usize, name: String },
+    Prepared(NormalizedTrack),
+    Finished(Result<(), String>),
+}
+
+pub struct NormalizationJob {
+    receiver: Receiver<NormalizationEvent>,
+    cancelled: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl NormalizationJob {
+    pub fn start(
+        tracks: Vec<AudioTrack>,
+        output_folder: PathBuf,
+        settings: NormalizationSettings,
+    ) -> Result<Self, String> {
+        let (sender, receiver) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let worker = thread::Builder::new()
+            .name("normalization".to_owned())
+            .spawn(move || {
+                let result = (|| {
+                    for (index, track) in tracks.iter().enumerate() {
+                        if worker_cancelled.load(Ordering::Relaxed) {
+                            return Err("PREPARATION CANCELLED".to_owned());
+                        }
+                        sender
+                            .send(NormalizationEvent::Processing {
+                                index,
+                                name: track.name.clone(),
+                            })
+                            .map_err(|_| "PREPARATION CLOSED".to_owned())?;
+                        let prepared = normalize_track(track, &output_folder, settings)?;
+                        sender
+                            .send(NormalizationEvent::Prepared(prepared))
+                            .map_err(|_| "PREPARATION CLOSED".to_owned())?;
+                    }
+                    if worker_cancelled.load(Ordering::Relaxed) {
+                        return Err("PREPARATION CANCELLED".to_owned());
+                    }
+                    Ok(())
+                })();
+                let _ = sender.send(NormalizationEvent::Finished(result));
+            })
+            .map_err(|error| format!("failed to start preparation: {error}"))?;
+        Ok(Self {
+            receiver,
+            cancelled,
+            worker: Some(worker),
+        })
+    }
+
+    pub fn poll(&self) -> Result<NormalizationEvent, TryRecvError> {
+        self.receiver.try_recv()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Drop for NormalizationJob {
+    fn drop(&mut self) {
+        self.cancel();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 pub fn clean_stale_cache_files(output_folder: impl AsRef<Path>) -> Result<usize, String> {
@@ -59,6 +138,13 @@ fn normalize_track_with(
     settings: NormalizationSettings,
     ffmpeg: &str,
 ) -> Result<NormalizedTrack, String> {
+    if settings.method == NormalizationMethod::None {
+        return Ok(NormalizedTrack {
+            source: track.clone(),
+            path: track.path.clone(),
+            cache_hit: false,
+        });
+    }
     fs::create_dir_all(output_folder)
         .map_err(|error| format!("failed to create {}: {error}", output_folder.display()))?;
     let output_path = output_folder.join(format!("{}.wav", cache_key(track, settings)));
@@ -71,6 +157,7 @@ fn normalize_track_with(
     }
 
     let filter = match settings.method {
+        NormalizationMethod::None => unreachable!("original tracks bypass normalization"),
         NormalizationMethod::Peak => {
             let peak_db = measure_peak(track.path.as_path(), ffmpeg)?;
             format!("volume={:.3}dB", TARGET_PEAK_DB - peak_db)
@@ -144,6 +231,7 @@ fn cache_key(track: &AudioTrack, settings: NormalizationSettings) -> String {
             .unwrap_or(0),
         modified,
         match settings.method {
+            NormalizationMethod::None => "none".to_owned(),
             NormalizationMethod::Peak => "peak".to_owned(),
             NormalizationMethod::Lufs => format!("lufs:{:.3}", settings.target_lufs),
         }
@@ -165,6 +253,116 @@ mod tests {
             duration_seconds: 2,
             codec: "pcm_s16le".to_owned(),
         }
+    }
+
+    #[test]
+    fn none_preserves_original_and_skips_ffmpeg_and_cache() {
+        let root = std::env::temp_dir().join(format!(
+            "deckprep-none-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("original.flac");
+        fs::write(&path, b"unchanged original audio").unwrap();
+        let output = root.join("cache");
+        let source = track(&path);
+        let prepared = normalize_track_with(
+            &source,
+            &output,
+            NormalizationSettings {
+                method: NormalizationMethod::None,
+                target_lufs: -14.0,
+            },
+            "ffmpeg-must-not-be-called",
+        )
+        .unwrap();
+        assert_eq!(prepared.path, path);
+        assert_eq!(prepared.source, source);
+        assert!(!prepared.cache_hit);
+        assert!(!output.exists());
+        assert_eq!(fs::read(&path).unwrap(), b"unchanged original audio");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn background_job_reports_ordered_progress_for_original_tracks() {
+        let sources = vec![
+            track(Path::new("first.flac")),
+            track(Path::new("second.mp3")),
+        ];
+        let job = NormalizationJob::start(
+            sources.clone(),
+            PathBuf::from("unused-cache"),
+            NormalizationSettings {
+                method: NormalizationMethod::None,
+                target_lufs: -14.0,
+            },
+        )
+        .unwrap();
+        for (expected_index, source) in sources.iter().enumerate() {
+            match job
+                .receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+            {
+                NormalizationEvent::Processing { index, name } => {
+                    assert_eq!(index, expected_index);
+                    assert_eq!(name, source.name);
+                }
+                _ => panic!("expected processing event"),
+            }
+            match job
+                .receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+            {
+                NormalizationEvent::Prepared(prepared) => assert_eq!(prepared.path, source.path),
+                _ => panic!("expected prepared event"),
+            }
+        }
+        assert!(matches!(
+            job.receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            NormalizationEvent::Finished(Ok(()))
+        ));
+    }
+
+    #[test]
+    fn background_job_reports_normalization_errors() {
+        let root = std::env::temp_dir().join(format!(
+            "deckprep-job-error-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let job = NormalizationJob::start(
+            vec![track(&root.join("missing.wav"))],
+            root.clone(),
+            NormalizationSettings {
+                method: NormalizationMethod::Peak,
+                target_lufs: -14.0,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            job.receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            NormalizationEvent::Processing { index: 0, .. }
+        ));
+        assert!(matches!(
+            job.receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            NormalizationEvent::Finished(Err(_))
+        ));
+        drop(job);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

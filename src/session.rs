@@ -103,6 +103,7 @@ impl PrepSession {
             &counter,
             &profile.tracks_folder,
             match profile.normalization {
+                NormalizationMethod::None => "NONE",
                 NormalizationMethod::Peak => "PEAK",
                 NormalizationMethod::Lufs => "LUFS",
             },

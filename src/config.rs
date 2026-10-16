@@ -21,6 +21,7 @@ pub enum DisplayBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NormalizationMethod {
+    None,
     Peak,
     Lufs,
 }
@@ -236,6 +237,17 @@ mod tests {
     #[test]
     fn accepts_pvm_resolution() {
         assert_eq!(valid_profile().validate(), Ok(()));
+    }
+
+    #[test]
+    fn none_normalization_round_trips_in_profile_json() {
+        let mut profile = valid_profile();
+        profile.normalization = NormalizationMethod::None;
+        let json = serde_json::to_value(&profile).unwrap();
+        assert_eq!(json["normalization"], "none");
+        let restored: RuntimeProfile = serde_json::from_value(json).unwrap();
+        assert_eq!(restored, profile);
+        assert_eq!(restored.validate(), Ok(()));
     }
 
     #[test]

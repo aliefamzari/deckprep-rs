@@ -17,10 +17,11 @@ pub fn run(output: impl AsRef<Path>) -> Result<(), String> {
     let side_duration_minutes = prompt_u32("Tape side duration (minutes)", 30)?;
     let leader_gap_seconds = prompt_u32("Leader gap (seconds)", 10)?;
     let track_gap_seconds = prompt_u32("Track gap (seconds)", 5)?;
-    let normalization = match prompt("Normalization (lufs/peak)", "lufs")?
+    let normalization = match prompt("Normalization (lufs/peak/none)", "lufs")?
         .to_ascii_lowercase()
         .as_str()
     {
+        "none" => NormalizationMethod::None,
         "peak" => NormalizationMethod::Peak,
         "lufs" => NormalizationMethod::Lufs,
         value => return Err(format!("unsupported normalization method: {value}")),

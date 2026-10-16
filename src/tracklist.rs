@@ -53,6 +53,9 @@ pub fn write_tracklist(
                 )
             })
             .and_then(|_| {
+                if normalization == "NONE" {
+                    return writeln!(file, "Normalization: NONE (original files)");
+                }
                 writeln!(
                     file,
                     "Normalization: {normalization} (target {target_lufs:+.1} LUFS)"

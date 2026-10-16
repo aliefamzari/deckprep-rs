@@ -1622,7 +1622,7 @@ impl AppUi {
             text(canvas, 14, 43, &auto_scroll_text(phase, 27), 1, color)?;
         }
         let clock = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        text(canvas, 188, 43, &clock, 1, CREAM)?;
+        text(canvas, 188, 43, &clock, 1, AMBER)?;
         let total = total_seconds.max(1);
         let progress = elapsed_seconds.min(total);
 
@@ -2287,9 +2287,9 @@ fn recording_progress_bar(
     outline(canvas, Rect::new(x, y, width as u32, 17), DIM)?;
     let elapsed_label = format!("{:02}:{:02}", elapsed / 60, elapsed % 60);
     let remaining_label = format!("{:02}:{:02}", remaining / 60, remaining % 60);
-    text(canvas, x + 4, y + 5, &elapsed_label, 1, CREAM)?;
+    text(canvas, x + 4, y + 5, &elapsed_label, 1, PHOSPHOR)?;
     let remaining_x = x + width - 4 - remaining_label.chars().count() as i32 * 6;
-    text(canvas, remaining_x, y + 5, &remaining_label, 1, CREAM)?;
+    text(canvas, remaining_x, y + 5, &remaining_label, 1, RED)?;
     Ok(())
 }
 
@@ -2964,13 +2964,13 @@ mod tests {
             canvas.clear();
             recording_progress_bar(&mut canvas, 14, 125, elapsed, total, 140).unwrap();
             let remaining_x = 150 - remaining_label.len() as i32 * 6;
-            text(&mut canvas, 18, 10, elapsed_label, 1, CREAM).unwrap();
-            text(&mut canvas, remaining_x, 10, remaining_label, 1, CREAM).unwrap();
-            for (x, label) in [(18, elapsed_label), (remaining_x, remaining_label)] {
+            text(&mut canvas, 18, 10, elapsed_label, 1, PHOSPHOR).unwrap();
+            text(&mut canvas, remaining_x, 10, remaining_label, 1, RED).unwrap();
+            for (x, label, color) in [(18, elapsed_label, PHOSPHOR), (remaining_x, remaining_label, RED)] {
                 let text_mask = |pixels: Vec<u8>| {
                     pixels
                         .chunks_exact(3)
-                        .map(|pixel| pixel == [CREAM.r, CREAM.g, CREAM.b])
+                        .map(|pixel| pixel == [color.r, color.g, color.b])
                         .collect::<Vec<_>>()
                 };
                 let actual = canvas
@@ -3025,7 +3025,7 @@ mod tests {
                 assert!(
                     pixels
                         .chunks_exact(3)
-                        .any(|pixel| pixel == [CREAM.r, CREAM.g, CREAM.b]),
+                        .any(|pixel| pixel == [AMBER.r, AMBER.g, AMBER.b]),
                     "recording system date/time is not visible"
                 );
             }
@@ -3571,6 +3571,43 @@ fn draw_digit(
     Ok(())
 }
 
+fn time_digit_at(value: &str, index: usize) -> bool {
+    let bytes = value.as_bytes();
+    if !bytes[index].is_ascii_digit() {
+        return false;
+    }
+    let mut start = index;
+    let mut end = index + 1;
+    let is_time_character = |byte: u8| byte.is_ascii_digit() || matches!(byte, b':' | b'-');
+    while start > 0 && is_time_character(bytes[start - 1]) {
+        start -= 1;
+    }
+    while end < bytes.len() && is_time_character(bytes[end]) {
+        end += 1;
+    }
+    let run = &bytes[start..end];
+    let clock = run.windows(3).any(|part| part[0].is_ascii_digit() && part[1] == b':' && part[2].is_ascii_digit());
+    let date = run.len() == 10 && run[4] == b'-' && run[7] == b'-'
+        && run.iter().enumerate().all(|(position, byte)| matches!(position, 4 | 7) || byte.is_ascii_digit());
+    (clock || date) && !bytes.get(end).is_some_and(|byte| matches!(byte, b'.' | b'/' | b'\\'))
+}
+
+fn time_digit(character: char) -> [u8; 7] {
+    match character {
+        '0' => [14, 17, 17, 0, 17, 17, 14],
+        '1' => [0, 1, 1, 0, 1, 1, 0],
+        '2' => [14, 1, 1, 14, 16, 16, 14],
+        '3' => [14, 1, 1, 14, 1, 1, 14],
+        '4' => [0, 17, 17, 14, 1, 1, 0],
+        '5' => [14, 16, 16, 14, 1, 1, 14],
+        '6' => [14, 16, 16, 14, 17, 17, 14],
+        '7' => [14, 1, 1, 0, 1, 1, 0],
+        '8' => [14, 17, 17, 14, 17, 17, 14],
+        '9' => [14, 17, 17, 14, 1, 1, 14],
+        _ => glyph(character),
+    }
+}
+
 fn text(
     canvas: &mut Canvas<Window>,
     x: i32,
@@ -3580,10 +3617,17 @@ fn text(
     color: Color,
 ) -> Result<(), String> {
     let mut cursor = x;
-    for character in value.chars() {
-        for (row, bits) in glyph(character).iter().enumerate() {
+    for (index, character) in value.char_indices() {
+        let segmented = time_digit_at(value, index);
+        let rows = if segmented { time_digit(character) } else { glyph(character) };
+        if segmented {
+            fill(canvas, Rect::new(cursor, y, 5 * scale, 7 * scale), Color::RGB(8, 12, 10))?;
+        }
+        for (row, bits) in rows.iter().enumerate() {
             for column in 0..5 {
-                if bits & (1 << (4 - column)) != 0 {
+                let lit = bits & (1 << (4 - column)) != 0;
+                let inactive = segmented && time_digit('8')[row] & (1 << (4 - column)) != 0;
+                if lit || inactive {
                     fill(
                         canvas,
                         Rect::new(
@@ -3592,7 +3636,7 @@ fn text(
                             scale,
                             scale,
                         ),
-                        color,
+                        if lit { color } else { Color::RGB(color.r / 8, color.g / 8, color.b / 8) },
                     )?;
                 }
             }

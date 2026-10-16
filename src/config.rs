@@ -9,6 +9,45 @@ use serde::{Deserialize, Serialize};
 pub const PVM_WIDTH: u32 = 320;
 pub const PVM_HEIGHT: u32 = 240;
 
+#[derive(Serialize, Deserialize)]
+struct LastProfile {
+    profile_path: PathBuf,
+}
+
+pub fn load_startup_profile(
+    explicit: Option<&Path>,
+    state_path: &Path,
+    default_path: &Path,
+) -> Result<(RuntimeProfile, PathBuf), String> {
+    if let Some(path) = explicit {
+        return RuntimeProfile::load(path).map(|profile| (profile, path.to_path_buf()));
+    }
+    if let Some(saved) = fs::read(state_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<LastProfile>(&bytes).ok())
+    {
+        if let Ok(profile) = RuntimeProfile::load(&saved.profile_path) {
+            return Ok((profile, saved.profile_path));
+        }
+    }
+    RuntimeProfile::load(default_path).map(|profile| (profile, default_path.to_path_buf()))
+}
+
+pub fn remember_profile(profile_path: &Path, state_path: &Path) -> Result<(), String> {
+    let profile_path = fs::canonicalize(profile_path)
+        .map_err(|error| format!("failed to resolve profile path: {error}"))?;
+    let saved = LastProfile { profile_path };
+    let bytes = serde_json::to_vec_pretty(&saved)
+        .map_err(|error| format!("failed to encode last profile: {error}"))?;
+    let temporary_path = state_path.with_extension("tmp");
+    let result =
+        fs::write(&temporary_path, bytes).and_then(|_| fs::rename(&temporary_path, state_path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result.map_err(|error| format!("failed to remember profile: {error}"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DisplayBackend {
@@ -228,6 +267,94 @@ mod tests {
     #[test]
     fn accepts_pvm_resolution() {
         assert_eq!(valid_profile().validate(), Ok(()));
+    }
+
+    #[test]
+    fn remembers_latest_profile_and_honors_explicit_startup_choice() {
+        let root = std::env::temp_dir().join(format!(
+            "deckprep-startup-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut default = valid_profile();
+        default.name = "Default".to_owned();
+        let default_path = default.save_snapshot(&root).unwrap();
+        let mut recent = valid_profile();
+        recent.name = "Recent".to_owned();
+        let recent_path = recent.save_snapshot(&root).unwrap();
+        let state_path = root.join("state.json");
+        assert_eq!(
+            load_startup_profile(None, &state_path, &default_path)
+                .unwrap()
+                .0,
+            default
+        );
+        remember_profile(&recent_path, &state_path).unwrap();
+        let (restored, restored_path) =
+            load_startup_profile(None, &state_path, &default_path).unwrap();
+        assert_eq!(restored, recent);
+        assert_eq!(restored_path, fs::canonicalize(&recent_path).unwrap());
+        assert_eq!(
+            load_startup_profile(Some(&default_path), &state_path, &default_path)
+                .unwrap()
+                .0,
+            default
+        );
+        assert!(
+            load_startup_profile(Some(&root.join("missing.json")), &state_path, &default_path)
+                .is_err()
+        );
+        remember_profile(&default_path, &state_path).unwrap();
+        assert_eq!(
+            load_startup_profile(None, &state_path, &recent_path)
+                .unwrap()
+                .0,
+            default
+        );
+        assert!(!state_path.with_extension("tmp").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unavailable_last_profile_or_invalid_state_falls_back_to_default() {
+        let root = std::env::temp_dir().join(format!(
+            "deckprep-startup-fallback-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let default = valid_profile();
+        let default_path = default.save_snapshot(&root).unwrap();
+        let mut recent = valid_profile();
+        recent.name = "Recent".to_owned();
+        let recent_path = recent.save_snapshot(&root).unwrap();
+        let state_path = root.join("state.json");
+        remember_profile(&recent_path, &state_path).unwrap();
+        fs::write(&recent_path, b"invalid profile").unwrap();
+        assert_eq!(
+            load_startup_profile(None, &state_path, &default_path)
+                .unwrap()
+                .0,
+            default
+        );
+        fs::remove_file(&recent_path).unwrap();
+        assert_eq!(
+            load_startup_profile(None, &state_path, &default_path)
+                .unwrap()
+                .0,
+            default
+        );
+        fs::write(&state_path, b"invalid state").unwrap();
+        assert_eq!(
+            load_startup_profile(None, &state_path, &default_path)
+                .unwrap()
+                .0,
+            default
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

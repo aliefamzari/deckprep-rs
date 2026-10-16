@@ -25,6 +25,12 @@ Install Rust, SDL2 development files, and FFmpeg. Then run:
 cargo run -- profiles/desktop-dev.json
 ```
 
+The app remembers the last successfully loaded or saved profile in the local,
+Git-ignored `.deckprep-state.json` file. Run `cargo run` without a profile argument
+to restore it. An explicit profile argument overrides the remembered choice and
+becomes the new default for next time. If the remembered profile is missing or
+invalid, the app falls back to `profiles/desktop-dev.json`.
+
 Create a reusable profile interactively:
 
 ```bash

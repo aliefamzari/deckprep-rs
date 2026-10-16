@@ -1,4 +1,6 @@
 /target
+/.deckprep-state.json
+/.deckprep-state.tmp
 
 # Local media and generated session data
 /tracks/*

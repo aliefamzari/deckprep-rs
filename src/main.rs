@@ -18,16 +18,20 @@ use deckprep_rs::ui::{
     AppUi, LegendContext, NormalizationProgress, NormalizationReview, ProfileBrowser,
     ProfileEditor, QueueBrowser, QueueNameEditor, TrackFolderBrowser, render_legend,
 };
-use deckprep_rs::{config::RuntimeProfile, timing::SessionPlan};
+use deckprep_rs::{
+    config::{RuntimeProfile, load_startup_profile, remember_profile},
+    timing::SessionPlan,
+};
 use sdl2::{
     event::Event,
     keyboard::{Keycode, Mod},
 };
 
 fn main() -> Result<(), String> {
-    let profile_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "profiles/desktop-dev.json".to_owned());
+    let requested_profile = std::env::args().nth(1);
+    let profile_path = requested_profile
+        .as_deref()
+        .unwrap_or("profiles/desktop-dev.json");
     if profile_path == "--audio-diagnostics" {
         let target_profile = std::env::args()
             .nth(2)
@@ -47,7 +51,12 @@ fn main() -> Result<(), String> {
         })?;
         return deckprep_rs::profile_wizard::run(output);
     }
-    let mut profile = RuntimeProfile::load(&profile_path)?;
+    let (mut profile, loaded_path) = load_startup_profile(
+        requested_profile.as_deref().map(Path::new),
+        Path::new(".deckprep-state.json"),
+        Path::new("profiles/desktop-dev.json"),
+    )?;
+    remember_active_profile(&loaded_path);
     let output_folder = Path::new(&profile.tracks_folder).join(&profile.normalized_folder);
     let _ = clean_stale_cache_files(&output_folder);
     let (tracks, library_error) = match scan_tracks(&profile.tracks_folder) {
@@ -264,6 +273,7 @@ fn main() -> Result<(), String> {
                                                 != profile.audio_backend
                                                 || new_profile.audio_device != profile.audio_device;
                                             profile = new_profile;
+                                            remember_active_profile(&path);
                                             if audio_changed {
                                                 player = AudioPlayer::new(
                                                     &profile.audio_backend,
@@ -478,6 +488,7 @@ fn main() -> Result<(), String> {
                             let folder_changed =
                                 active_editor.profile.tracks_folder != profile.tracks_folder;
                             let path = active_editor.profile.save_snapshot("profiles")?;
+                            remember_active_profile(&path);
                             profile = active_editor.profile.clone();
                             if folder_changed {
                                 player.stop()?;
@@ -557,6 +568,7 @@ fn main() -> Result<(), String> {
                         Keycode::N => preparation = start_preparation(&mut ui, &profile, false),
                         Keycode::S => {
                             let path = profile.save_snapshot("profiles")?;
+                            remember_active_profile(&path);
                             ui.set_normalization_status(format!(
                                 "PROFILE SAVED {}",
                                 path.file_name()
@@ -772,6 +784,12 @@ fn main() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn remember_active_profile(path: &Path) {
+    if let Err(error) = remember_profile(path, Path::new(".deckprep-state.json")) {
+        eprintln!("{error}");
+    }
 }
 
 fn is_browser_scroll_key(key: Keycode) -> bool {

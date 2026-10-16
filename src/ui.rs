@@ -1321,7 +1321,8 @@ impl AppUi {
         profile: &RuntimeProfile,
         meter_levels: Option<(usize, usize)>,
     ) -> Result<(), String> {
-        if self.queue_view {
+        let test_tone_active = self.test_tone_preview.is_some();
+        if self.queue_view && !test_tone_active {
             return self.render_queue_workspace(canvas, profile);
         }
         canvas.set_draw_color(BACKGROUND);
@@ -1362,7 +1363,7 @@ impl AppUi {
         )?;
         let capacity_warning =
             capacity_warning_phase(self.capacity_warning_started.map(|start| start.elapsed()));
-        if self.selected_panel || capacity_warning.is_some() {
+        if !test_tone_active && (self.selected_panel || capacity_warning.is_some()) {
             draw_selected_panel(
                 canvas,
                 &self.tracks,
@@ -2668,6 +2669,57 @@ mod tests {
         assert_eq!(ui.current_status(), Some("PLAYING TEST TONE 400Hz (Level)"));
         ui.sync_test_tone_preview(None, false);
         assert_eq!(ui.current_status(), None);
+    }
+
+    #[test]
+    #[ignore = "requires SDL video; run with SDL_VIDEODRIVER=dummy"]
+    fn test_tone_meters_override_queue_panels_and_restore_previous_view() {
+        let sdl = sdl2::init().unwrap();
+        let video = sdl.video().unwrap();
+        let window = video
+            .window("meter regression", 320, 240)
+            .hidden()
+            .build()
+            .unwrap();
+        let mut canvas = window.into_canvas().software().build().unwrap();
+        let profile = RuntimeProfile::default();
+        for queue_view in [false, true] {
+            let mut ui = AppUi::new(tracks(1), None);
+            ui.handle_key(Keycode::Space, &profile);
+            ui.queue_view = queue_view;
+            ui.render(&mut canvas, &profile, Some((8, 8))).unwrap();
+            let previous_pixel = canvas
+                .read_pixels(
+                    Rect::new(204, 72, 1, 1),
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap();
+            assert_ne!(previous_pixel, vec![PHOSPHOR.r, PHOSPHOR.g, PHOSPHOR.b]);
+
+            ui.set_test_tone_preview(std::path::Path::new("tone.wav"), TestTone::Hz400);
+            ui.set_previewing(true, false);
+            ui.render(&mut canvas, &profile, Some((8, 8))).unwrap();
+            let meter_pixel = canvas
+                .read_pixels(
+                    Rect::new(204, 72, 1, 1),
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap();
+            assert_eq!(meter_pixel, vec![PHOSPHOR.r, PHOSPHOR.g, PHOSPHOR.b]);
+            assert_eq!(ui.queue_view, queue_view);
+            assert!(ui.selected_panel);
+            assert_eq!(ui.selected_tracks().len(), 1);
+
+            ui.set_previewing(false, false);
+            ui.render(&mut canvas, &profile, None).unwrap();
+            let restored_pixel = canvas
+                .read_pixels(
+                    Rect::new(204, 72, 1, 1),
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap();
+            assert_eq!(restored_pixel, previous_pixel);
+        }
     }
 
     #[test]

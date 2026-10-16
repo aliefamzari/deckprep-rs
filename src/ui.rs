@@ -2287,9 +2287,9 @@ fn recording_progress_bar(
     outline(canvas, Rect::new(x, y, width as u32, 17), DIM)?;
     let elapsed_label = format!("{:02}:{:02}", elapsed / 60, elapsed % 60);
     let remaining_label = format!("{:02}:{:02}", remaining / 60, remaining % 60);
-    text(canvas, x + 4, y + 5, &elapsed_label, 1, PHOSPHOR)?;
+    text_with_backing(canvas, x + 4, y + 5, &elapsed_label, 1, PHOSPHOR, false)?;
     let remaining_x = x + width - 4 - remaining_label.chars().count() as i32 * 6;
-    text(canvas, remaining_x, y + 5, &remaining_label, 1, RED)?;
+    text_with_backing(canvas, remaining_x, y + 5, &remaining_label, 1, RED, false)?;
     Ok(())
 }
 
@@ -2955,6 +2955,7 @@ mod tests {
         }
         for (elapsed, total, elapsed_label, remaining_label) in [
             (0, 0, "00:00", "00:00"),
+            (6, 100, "00:06", "01:34"),
             (0, 7200, "00:00", "120:00"),
             (90, 180, "01:30", "01:30"),
             (999, 180, "03:00", "00:00"),
@@ -2966,7 +2967,10 @@ mod tests {
             let remaining_x = 150 - remaining_label.len() as i32 * 6;
             text(&mut canvas, 18, 10, elapsed_label, 1, PHOSPHOR).unwrap();
             text(&mut canvas, remaining_x, 10, remaining_label, 1, RED).unwrap();
-            for (x, label, color) in [(18, elapsed_label, PHOSPHOR), (remaining_x, remaining_label, RED)] {
+            for (x, label, color) in [
+                (18, elapsed_label, PHOSPHOR),
+                (remaining_x, remaining_label, RED),
+            ] {
                 let text_mask = |pixels: Vec<u8>| {
                     pixels
                         .chunks_exact(3)
@@ -2990,6 +2994,31 @@ mod tests {
                     text_mask(expected),
                     "bar label {label} at {elapsed}/{total}"
                 );
+                let filled = u64::from(elapsed.min(total)) * 138 / u64::from(total.max(1));
+                for (index, character) in label.char_indices() {
+                    if character != '0' {
+                        continue;
+                    }
+                    for (offset_x, offset_y) in [(1, 1), (2, 2), (3, 4)] {
+                        let pixel_x = x + index as i32 * 6 + offset_x;
+                        let background = if pixel_x < 15 + filled as i32 {
+                            RECORDING_PROGRESS
+                        } else {
+                            PANEL
+                        };
+                        let pixel = canvas
+                            .read_pixels(
+                                Rect::new(pixel_x, 130 + offset_y, 1, 1),
+                                sdl2::pixels::PixelFormatEnum::RGB24,
+                            )
+                            .unwrap();
+                        assert_eq!(
+                            pixel,
+                            vec![background.r, background.g, background.b],
+                            "zero interior must preserve the bar fill at {elapsed}/{total}"
+                        );
+                    }
+                }
             }
         }
         let names: Vec<String> = (0..12)
@@ -3586,10 +3615,20 @@ fn time_digit_at(value: &str, index: usize) -> bool {
         end += 1;
     }
     let run = &bytes[start..end];
-    let clock = run.windows(3).any(|part| part[0].is_ascii_digit() && part[1] == b':' && part[2].is_ascii_digit());
-    let date = run.len() == 10 && run[4] == b'-' && run[7] == b'-'
-        && run.iter().enumerate().all(|(position, byte)| matches!(position, 4 | 7) || byte.is_ascii_digit());
-    (clock || date) && !bytes.get(end).is_some_and(|byte| matches!(byte, b'.' | b'/' | b'\\'))
+    let clock = run
+        .windows(3)
+        .any(|part| part[0].is_ascii_digit() && part[1] == b':' && part[2].is_ascii_digit());
+    let date = run.len() == 10
+        && run[4] == b'-'
+        && run[7] == b'-'
+        && run
+            .iter()
+            .enumerate()
+            .all(|(position, byte)| matches!(position, 4 | 7) || byte.is_ascii_digit());
+    (clock || date)
+        && !bytes
+            .get(end)
+            .is_some_and(|byte| matches!(byte, b'.' | b'/' | b'\\'))
 }
 
 fn time_digit(character: char) -> [u8; 7] {
@@ -3616,12 +3655,32 @@ fn text(
     scale: u32,
     color: Color,
 ) -> Result<(), String> {
+    text_with_backing(canvas, x, y, value, scale, color, true)
+}
+
+fn text_with_backing(
+    canvas: &mut Canvas<Window>,
+    x: i32,
+    y: i32,
+    value: &str,
+    scale: u32,
+    color: Color,
+    digit_backing: bool,
+) -> Result<(), String> {
     let mut cursor = x;
     for (index, character) in value.char_indices() {
         let segmented = time_digit_at(value, index);
-        let rows = if segmented { time_digit(character) } else { glyph(character) };
-        if segmented {
-            fill(canvas, Rect::new(cursor, y, 5 * scale, 7 * scale), Color::RGB(8, 12, 10))?;
+        let rows = if segmented {
+            time_digit(character)
+        } else {
+            glyph(character)
+        };
+        if segmented && digit_backing {
+            fill(
+                canvas,
+                Rect::new(cursor, y, 5 * scale, 7 * scale),
+                Color::RGB(8, 12, 10),
+            )?;
         }
         for (row, bits) in rows.iter().enumerate() {
             for column in 0..5 {
@@ -3636,7 +3695,11 @@ fn text(
                             scale,
                             scale,
                         ),
-                        if lit { color } else { Color::RGB(color.r / 8, color.g / 8, color.b / 8) },
+                        if lit {
+                            color
+                        } else {
+                            Color::RGB(color.r / 8, color.g / 8, color.b / 8)
+                        },
                     )?;
                 }
             }

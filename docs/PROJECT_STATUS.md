@@ -56,7 +56,7 @@ The four intended stages are implemented:
 
 Additional workflow features:
 
-- During the leader-gap countdown, exposed cassette tape is white with moving highlights along the supply/head/take-up path; the wound packs stay brown and normal magnetic tape returns when recording begins.
+- White leader tape and brown magnetic tape meet at a moving splice: it crosses the head as the leader gap ends, continues along the take-up path after audio starts, and gradually winds around the take-up reel without an abrupt phase-based color switch.
 - Prep countdown status blinks red every 350 ms; leader-gap, recording, track-gap, and completion statuses retain their normal styling.
 - Recording displays the live local system date/time (YYYY-MM-DD HH:MM:SS) below the SESSION header, alongside the bounded phase status.
 - A centered LOADING RECORDING popup is presented before recording-session audio and meter preparation, and disappears when the countdown begins or an error returns to the main screen.

@@ -1969,7 +1969,8 @@ fn draw_tape_reels(
     if let Some(leader_duration) = leader_duration {
         let movement = (elapsed.as_millis() / 70 % 12) as usize;
         let mut distance = 0;
-        let supply_steps = (left_roller.0 - 2 - left_tangent_x).abs()
+        let supply_steps = (left_roller.0 - 2 - left_tangent_x)
+            .abs()
             .max((left_roller.1 - left_center.1).abs());
         let head_distance = supply_steps + 1 + head_center_x - (left_roller.0 + 3);
         let splice = leader_splice_position(elapsed, leader_duration, f64::from(head_distance));
@@ -2928,7 +2929,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires SDL video; run with SDL_VIDEODRIVER=dummy"]
-    fn leader_tape_moves_in_white_only_during_leader_gap() {
+    fn leader_tape_splice_moves_continuously_onto_takeup_reel() {
         let sdl = sdl2::init().unwrap();
         let video = sdl.video().unwrap();
         let window = video
@@ -3001,6 +3002,106 @@ mod tests {
             frames[0], frames[1],
             "leader highlights must move between frames"
         );
+        let mut boundary_frame = None;
+        let mut white_coil_before = 0;
+        for (phase, elapsed) in [
+            ("LEADER GAP 02S - Q CANCEL", 8000),
+            ("LEADER GAP 01S - Q CANCEL", 9990),
+            ("LEADER GAP 01S - Q CANCEL", 10000),
+            ("RECORDING 1/1", 10000),
+            ("RECORDING 1/1", 10800),
+            ("RECORDING 1/1", 14500),
+            ("RECORDING 1/1", 17000),
+        ] {
+            ui.render_recording(
+                &mut canvas,
+                &profile,
+                phase,
+                &["Track.flac".to_owned()],
+                Some(0),
+                elapsed / 1000,
+                1800,
+                0,
+                (0, 0),
+                Duration::from_millis(u64::from(elapsed)),
+                true,
+                None,
+            )
+            .unwrap();
+            if elapsed == 10000 {
+                let cassette = canvas
+                    .read_pixels(
+                        Rect::new(194, 55, 84, 54),
+                        sdl2::pixels::PixelFormatEnum::RGB24,
+                    )
+                    .unwrap();
+                if phase.starts_with("LEADER GAP") {
+                    boundary_frame = Some(cassette);
+                } else {
+                    assert_eq!(
+                        boundary_frame.as_ref().unwrap(),
+                        &cassette,
+                        "phase change must not recolor the tape"
+                    );
+                }
+            }
+            let coil = canvas
+                .read_pixels(
+                    Rect::new(245, 73, 13, 13),
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap();
+            let white_coil = coil
+                .chunks_exact(3)
+                .filter(|pixel| *pixel == [196, 204, 196])
+                .count();
+            if elapsed == 10800 {
+                white_coil_before = white_coil;
+                assert!(
+                    white_coil > 0,
+                    "leader must still be on the take-up reel after audio starts"
+                );
+                let path = canvas
+                    .read_pixels(
+                        Rect::new(211, 103, 54, 1),
+                        sdl2::pixels::PixelFormatEnum::RGB24,
+                    )
+                    .unwrap();
+                assert!(path.chunks_exact(3).any(|pixel| pixel == [196, 204, 196]));
+                assert!(
+                    path.chunks_exact(3)
+                        .any(|pixel| pixel[0] > pixel[1] && pixel[1] > pixel[2]),
+                    "brown tape must follow the white leader"
+                );
+            }
+            if elapsed == 14500 {
+                assert!(
+                    white_coil > 0 && white_coil < white_coil_before,
+                    "brown tape must gradually cover the wound leader"
+                );
+            }
+            if elapsed == 17000 {
+                assert_eq!(
+                    white_coil, 0,
+                    "no leader should remain visible after the splice winds in"
+                );
+            }
+            if let Ok(prefix) = std::env::var("DECKPREP_SPLICE_SCREENSHOTS") {
+                let mut image = canvas
+                    .read_pixels(None, sdl2::pixels::PixelFormatEnum::RGB24)
+                    .unwrap();
+                sdl2::surface::Surface::from_data(
+                    &mut image,
+                    320,
+                    240,
+                    960,
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap()
+                .save_bmp(format!("{prefix}-{elapsed}.bmp"))
+                .unwrap();
+            }
+        }
     }
 
     #[test]

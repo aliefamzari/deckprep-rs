@@ -1636,7 +1636,7 @@ impl AppUi {
             counter_running,
             progress,
             total,
-            (profile.leader_gap_seconds > 0 && !phase.starts_with("PREP "))
+            (profile.leader_gap_seconds > 0 && phase != "PREP COMPLETE")
                 .then_some(Duration::from_secs(u64::from(profile.leader_gap_seconds))),
         )?;
 
@@ -1967,13 +1967,21 @@ fn draw_tape_reels(
         (right_roller.0 - 3, trap_y + 7),
     )?;
     if let Some(leader_duration) = leader_duration {
-        let movement = (elapsed.as_millis() / 70 % 12) as usize;
+        let movement = if rotating {
+            (elapsed.as_millis() / 70 % 12) as usize
+        } else {
+            0
+        };
         let mut distance = 0;
         let supply_steps = (left_roller.0 - 2 - left_tangent_x)
             .abs()
             .max((left_roller.1 - left_center.1).abs());
         let head_distance = supply_steps + 1 + head_center_x - (left_roller.0 + 3);
-        let splice = leader_splice_position(elapsed, leader_duration, f64::from(head_distance));
+        let splice = if rotating {
+            leader_splice_position(elapsed, leader_duration, f64::from(head_distance))
+        } else {
+            f64::NEG_INFINITY
+        };
         for (start, end) in [
             (
                 (left_tangent_x, left_center.1),
@@ -2940,6 +2948,48 @@ mod tests {
         let mut canvas = window.into_canvas().software().build().unwrap();
         let ui = AppUi::new(Vec::new(), None);
         let profile = RuntimeProfile::default();
+        let mut prep_frame = None;
+        for remaining in [10000, 9300] {
+            ui.render_recording(
+                &mut canvas,
+                &profile,
+                "PREP 10S - Q CANCEL",
+                &[],
+                None,
+                0,
+                1800,
+                0,
+                (0, 0),
+                Duration::from_millis(remaining),
+                false,
+                None,
+            )
+            .unwrap();
+            let tape = canvas
+                .read_pixels(
+                    Rect::new(211, 103, 12, 1),
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap();
+            assert!(
+                tape.chunks_exact(3)
+                    .all(|pixel| pixel == [196, 204, 196] || pixel == [250, 252, 244]),
+                "prep countdown must show white leader tape"
+            );
+            let cassette = canvas
+                .read_pixels(
+                    Rect::new(194, 55, 84, 54),
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap();
+            if let Some(previous) = &prep_frame {
+                assert_eq!(
+                    &cassette, previous,
+                    "prep leader tape must remain stationary"
+                );
+            }
+            prep_frame = Some(cassette);
+        }
         let mut frames = Vec::new();
         for (phase, elapsed) in [
             ("LEADER GAP 10S - Q CANCEL", 0),
@@ -2961,6 +3011,19 @@ mod tests {
                 None,
             )
             .unwrap();
+            if elapsed == 0 {
+                let cassette = canvas
+                    .read_pixels(
+                        Rect::new(194, 55, 84, 54),
+                        sdl2::pixels::PixelFormatEnum::RGB24,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    Some(cassette),
+                    prep_frame,
+                    "prep must match the start of the leader gap"
+                );
+            }
             let pixels = canvas
                 .read_pixels(
                     Rect::new(211, 103, 12, 1),

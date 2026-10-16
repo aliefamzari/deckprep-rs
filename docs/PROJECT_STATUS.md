@@ -20,6 +20,7 @@ The original Python implementation remains the behavioral reference in the sibli
 - Desktop development profile for WSL2/WSLg.
 - Keyboard track navigation with Up/Down, J/K, Page Up/Down, Home, and End.
 - Track selection and deselection with Space, and clear selection with C.
+- Over-capacity selections are rejected without popup text; MAX timing blinks in a red box for three seconds in the main selected panel and queue workspace.
 - Dynamic seven-row track viewport with auto-scroll and scrollbar.
 - Consolidated header displaying active profile and DAC device, eliminating redundant resolution text and sub-bar to maximize vertical screen space for tracks and meters.
 - Long-title marquee for the highlighted track.
@@ -68,6 +69,7 @@ Additional workflow features:
   ```
 
 - In-app profile editor opened with W.
+- Keyboard folder explorer opened with F2 in the profile editor or B when the main library has no tracks; supports parent navigation, paged folder lists, missing-path recovery, and cancellation. Space selects the current folder. Editor changes reload tracks on Ctrl+S; main-page selection reloads immediately and can be persisted with S.
 - Visual badges for text fields (`[TXT]`) and predefined options (`[OPT]`), with dynamic instruction header and `< value >` brackets.
 - Numeric/enum profile editing with Left/Right.
 - Text editing with cursor indicator and case-sensitive rendering for profile name, tracks folder, normalized folder, audio device, and calibration path.

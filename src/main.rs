@@ -13,7 +13,7 @@ use deckprep_rs::session::{PrepSession, SessionTickResult};
 use deckprep_rs::tone::{TestTone, generate_test_tone};
 use deckprep_rs::ui::{
     AppUi, LegendContext, NormalizationReview, ProfileBrowser, ProfileEditor, QueueBrowser,
-    QueueNameEditor, render_legend,
+    QueueNameEditor, TrackFolderBrowser, render_legend,
 };
 use deckprep_rs::{
     config::{NormalizationMethod, RuntimeProfile},
@@ -88,16 +88,30 @@ fn main() -> Result<(), String> {
     let mut queue_editor: Option<QueueNameEditor> = None;
     let mut queue_browser: Option<QueueBrowser> = None;
     let mut profile_browser: Option<ProfileBrowser> = None;
+    let mut track_folder_browser: Option<TrackFolderBrowser> = None;
     let mut review: Option<NormalizationReview> = None;
     let mut prep_session: Option<PrepSession> = None;
     let mut legend: Option<LegendContext> = None;
+    let mut shortcut_consumed_key = false;
 
     'running: loop {
         let mut start_prep = false;
         let mut start_reviewed_prep = false;
         for event in events.poll_iter() {
+            if let Event::KeyDown {
+                keycode,
+                repeat: false,
+                ..
+            } = &event
+            {
+                shortcut_consumed_key = track_folder_browser.is_some()
+                    || (editor.is_none() && queue_editor.is_none() && *keycode == Some(Keycode::W));
+            }
             match event {
                 Event::TextInput { ref text, .. } => {
+                    if track_folder_browser.is_some() || shortcut_consumed_key {
+                        continue;
+                    }
                     if let Some(active_editor) = editor.as_mut() {
                         active_editor.handle_text_input(text);
                     } else if let Some(active_queue_editor) = queue_editor.as_mut() {
@@ -111,6 +125,8 @@ fn main() -> Result<(), String> {
                 } => {
                     if legend.is_some() {
                         legend = None;
+                    } else if track_folder_browser.is_some() {
+                        track_folder_browser = None;
                     } else if let Some(mut session) = prep_session.take() {
                         let was_complete = session.is_complete();
                         session.cancel(&mut player);
@@ -144,6 +160,8 @@ fn main() -> Result<(), String> {
                 {
                     if legend.is_some() {
                         legend = None;
+                    } else if track_folder_browser.is_some() {
+                        track_folder_browser = None;
                     } else if let Some(mut session) = prep_session.take() {
                         let was_complete = session.is_complete();
                         session.cancel(&mut player);
@@ -173,6 +191,24 @@ fn main() -> Result<(), String> {
                         if key == Keycode::Return && session.is_complete() {
                             prep_session = None;
                             ui.set_previewing(false, false);
+                        }
+                        continue;
+                    }
+                    if let Some(browser) = track_folder_browser.as_mut() {
+                        if let Some(accept) = browser.handle_key(key) {
+                            if accept {
+                                let folder =
+                                    browser.selected_folder().to_string_lossy().into_owned();
+                                if let Some(active_editor) = editor.as_mut() {
+                                    active_editor.profile.tracks_folder = folder;
+                                } else {
+                                    player.stop()?;
+                                    preview_meter = None;
+                                    profile.tracks_folder = folder;
+                                    reload_library(&mut ui, &profile);
+                                }
+                            }
+                            track_folder_browser = None;
                         }
                         continue;
                     }
@@ -393,10 +429,24 @@ fn main() -> Result<(), String> {
                         continue;
                     }
                     if let Some(active_editor) = editor.as_mut() {
-                        if key == Keycode::S && keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD) {
+                        if key == Keycode::F2 {
+                            match TrackFolderBrowser::new(&active_editor.profile.tracks_folder) {
+                                Ok(browser) => track_folder_browser = Some(browser),
+                                Err(error) => ui.set_normalization_status(error),
+                            }
+                        } else if key == Keycode::S
+                            && keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD)
+                        {
                             active_editor.profile.validate()?;
+                            let folder_changed =
+                                active_editor.profile.tracks_folder != profile.tracks_folder;
+                            let path = active_editor.profile.save_snapshot("profiles")?;
                             profile = active_editor.profile.clone();
-                            let path = profile.save_snapshot("profiles")?;
+                            if folder_changed {
+                                player.stop()?;
+                                preview_meter = None;
+                                reload_library(&mut ui, &profile);
+                            }
                             ui.set_normalization_status(format!(
                                 "PROFILE SAVED {}",
                                 path.file_name()
@@ -410,6 +460,12 @@ fn main() -> Result<(), String> {
                         continue;
                     }
                     match key {
+                        Keycode::B if ui.current_track().is_none() => {
+                            match TrackFolderBrowser::new(&profile.tracks_folder) {
+                                Ok(browser) => track_folder_browser = Some(browser),
+                                Err(error) => ui.set_normalization_status(error),
+                            }
+                        }
                         Keycode::W => editor = Some(ProfileEditor::new(&profile)),
                         Keycode::S if keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD) => {
                             if ui.selected_tracks().is_empty() {
@@ -588,6 +644,8 @@ fn main() -> Result<(), String> {
             .map(|meter| meter.level_at(player.position_seconds()));
         if let Some(session) = prep_session.as_ref() {
             session.render(&mut canvas, &ui, &profile, &player)?;
+        } else if let Some(browser) = track_folder_browser.as_ref() {
+            browser.render(&mut canvas)?;
         } else if let Some(browser) = profile_browser.as_ref() {
             browser.render(&mut canvas)?;
         } else if let Some(browser) = queue_browser.as_ref() {
@@ -609,6 +667,14 @@ fn main() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn reload_library(ui: &mut AppUi, profile: &RuntimeProfile) {
+    let (tracks, error) = match scan_tracks(&profile.tracks_folder) {
+        Ok(tracks) => (tracks, None),
+        Err(error) => (Vec::new(), Some(error)),
+    };
+    ui.reset_library(tracks, error);
 }
 
 fn normalize_selected(ui: &mut AppUi, profile: &RuntimeProfile) -> Result<(), String> {

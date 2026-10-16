@@ -40,6 +40,7 @@ pub struct AppUi {
     preview_paused: bool,
     normalization_status: String,
     status_updated_at: Option<Instant>,
+    capacity_warning_started: Option<Instant>,
     prep_requested: bool,
     focus_changed_at: Instant,
     library_error: Option<String>,
@@ -62,6 +63,148 @@ pub struct ProfileBrowser {
     pub paths: Vec<std::path::PathBuf>,
     cursor: usize,
     viewport_start: usize,
+}
+
+pub struct TrackFolderBrowser {
+    folder: std::path::PathBuf,
+    directories: Vec<std::path::PathBuf>,
+    cursor: usize,
+    viewport_start: usize,
+    error: Option<String>,
+}
+
+impl TrackFolderBrowser {
+    pub fn new(path: &str) -> Result<Self, String> {
+        let mut folder = std::env::current_dir()
+            .map_err(|error| error.to_string())?
+            .join(path);
+        while !folder.is_dir() {
+            if !folder.pop() {
+                return Err("NO ACCESSIBLE START FOLDER".to_owned());
+            }
+        }
+        let mut browser = Self {
+            folder: folder.clone(),
+            directories: Vec::new(),
+            cursor: 0,
+            viewport_start: 0,
+            error: None,
+        };
+        browser.open(folder);
+        Ok(browser)
+    }
+
+    fn open(&mut self, folder: std::path::PathBuf) {
+        let result = (|| {
+            let mut directories = Vec::new();
+            for entry in std::fs::read_dir(&folder)? {
+                let entry = entry?;
+                if entry.path().is_dir() {
+                    directories.push(entry.path());
+                }
+            }
+            directories.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+            Ok::<_, std::io::Error>(directories)
+        })();
+        match result {
+            Ok(directories) => {
+                self.folder = folder;
+                self.directories = directories;
+                self.cursor = 0;
+                self.viewport_start = 0;
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    pub fn selected_folder(&self) -> &std::path::Path {
+        &self.folder
+    }
+
+    pub fn handle_key(&mut self, key: Keycode) -> Option<bool> {
+        match key {
+            Keycode::Escape | Keycode::Q => return Some(false),
+            Keycode::Space if self.error.is_none() => return Some(true),
+            Keycode::Return | Keycode::Right => {
+                if let Some(folder) = self.directories.get(self.cursor).cloned() {
+                    self.open(folder);
+                }
+            }
+            Keycode::Backspace | Keycode::Left => {
+                if let Some(parent) = self.folder.parent() {
+                    self.open(parent.to_path_buf());
+                }
+            }
+            Keycode::Up | Keycode::K => self.cursor = self.cursor.saturating_sub(1),
+            Keycode::Down | Keycode::J => {
+                self.cursor = (self.cursor + 1).min(self.directories.len().saturating_sub(1));
+            }
+            Keycode::PageUp => self.cursor = self.cursor.saturating_sub(7),
+            Keycode::PageDown => {
+                self.cursor = (self.cursor + 7).min(self.directories.len().saturating_sub(1));
+            }
+            Keycode::Home => self.cursor = 0,
+            Keycode::End => self.cursor = self.directories.len().saturating_sub(1),
+            _ => {}
+        }
+        if self.cursor < self.viewport_start {
+            self.viewport_start = self.cursor;
+        }
+        if self.cursor >= self.viewport_start + 7 {
+            self.viewport_start = self.cursor + 1 - 7;
+        }
+        None
+    }
+
+    pub fn render(&self, canvas: &mut Canvas<Window>) -> Result<(), String> {
+        canvas.set_draw_color(BACKGROUND);
+        canvas.clear();
+        outline(canvas, Rect::new(6, 6, 308, 228), DIM)?;
+        text(canvas, 14, 14, "TRACKS FOLDER", 2, PHOSPHOR)?;
+        text(
+            canvas,
+            14,
+            40,
+            &auto_scroll_text(&self.folder.to_string_lossy(), 48),
+            1,
+            AMBER,
+        )?;
+        if self.directories.is_empty() {
+            text(canvas, 14, 65, "NO SUBFOLDERS", 1, DIM)?;
+        }
+        for (row, folder) in self
+            .directories
+            .iter()
+            .skip(self.viewport_start)
+            .take(7)
+            .enumerate()
+        {
+            let selected = self.viewport_start + row == self.cursor;
+            let row_y = 62 + row as i32 * 17;
+            if selected {
+                fill(canvas, Rect::new(12, row_y - 3, 296, 14), PANEL)?;
+            }
+            let name = format!(
+                "[DIR] {}",
+                folder.file_name().unwrap_or_default().to_string_lossy()
+            );
+            text(
+                canvas,
+                14,
+                row_y,
+                &auto_scroll_text(&name, 48),
+                1,
+                if selected { PHOSPHOR } else { CREAM },
+            )?;
+        }
+        if let Some(error) = &self.error {
+            text(canvas, 14, 186, &auto_scroll_text(error, 48), 1, RED)?;
+        }
+        text(canvas, 14, 202, "ENTER OPEN  BKSP UP  ESC CANCEL", 1, DIM)?;
+        text(canvas, 14, 218, "SPACE USE CURRENT FOLDER", 1, AMBER)?;
+        Ok(())
+    }
 }
 
 impl ProfileBrowser {
@@ -375,7 +518,7 @@ pub fn render_legend(canvas: &mut Canvas<Window>, context: LegendContext) -> Res
             ("L", "LOAD PROFILE"),
             ("ENTER", "PREPARE"),
             ("TAB / V", "SELECTED QUEUE"),
-            ("W", "PROFILE EDITOR"),
+            ("W / B", "EDITOR / FOLDER"),
         ],
         LegendContext::Review => &[
             ("UP/DOWN", "MOVE TRACK"),
@@ -391,6 +534,7 @@ pub fn render_legend(canvas: &mut Canvas<Window>, context: LegendContext) -> Res
             ("UP/DOWN", "NAVIGATE FIELDS"),
             ("[TXT] FIELDS", "TYPE TEXT / BKSP"),
             ("[OPT] FIELDS", "LEFT/RIGHT CHANGE"),
+            ("F2", "BROWSE TRACK FOLDER"),
             ("CTRL-S", "SAVE PROFILE"),
             ("ESC", "CLOSE EDITOR"),
         ],
@@ -678,7 +822,9 @@ impl ProfileEditor {
         fill(canvas, Rect::new(9, 9, 302, 25), PANEL)?;
         text(canvas, 14, 13, "PROFILE EDITOR", 2, PHOSPHOR)?;
 
-        if self.is_text_field() {
+        if self.field == 1 {
+            text(canvas, 14, 43, "[TXT] TYPE PATH  F2 BROWSE", 1, AMBER)?;
+        } else if self.is_text_field() {
             text(canvas, 14, 43, "[TXT] TYPE TO EDIT  BKSP ERASE", 1, AMBER)?;
         } else {
             text(
@@ -815,6 +961,7 @@ impl ProfileEditor {
 
         fill(canvas, Rect::new(9, 211, 302, 20), PANEL)?;
         text(canvas, 14, 215, "CTRL-S SAVE", 1, AMBER)?;
+        text(canvas, 96, 225, "F2 BROWSE TRACKS", 1, PHOSPHOR)?;
         text(canvas, 150, 215, "ESC CLOSE", 1, RED)?;
         text(canvas, 258, 215, "?", 1, AMBER)?;
         Ok(())
@@ -866,6 +1013,7 @@ impl AppUi {
             preview_paused: false,
             normalization_status: String::new(),
             status_updated_at: None,
+            capacity_warning_started: None,
             prep_requested: false,
             focus_changed_at: Instant::now(),
             library_error,
@@ -894,6 +1042,7 @@ impl AppUi {
             Keycode::End => self.cursor = self.tracks.len() - 1,
             Keycode::Space => {
                 if self.selected[self.cursor] {
+                    self.capacity_warning_started = None;
                     self.selected[self.cursor] = false;
                     self.selection_order.retain(|index| *index != self.cursor);
                     self.selected_panel = self.selected.iter().any(|is_selected| *is_selected);
@@ -902,14 +1051,12 @@ impl AppUi {
                     candidate_tracks.push(track.clone());
                     let plan = SessionPlan::from_audio_tracks(profile, &candidate_tracks);
                     if plan.fits() {
+                        self.capacity_warning_started = None;
                         self.selected[self.cursor] = true;
                         self.selection_order.push(self.cursor);
                         self.selected_panel = true;
                     } else {
-                        self.set_normalization_status(format!(
-                            "EXCEEDS CAPACITY (MAX {:02}:00)",
-                            profile.side_duration_minutes
-                        ));
+                        self.capacity_warning_started = Some(Instant::now());
                     }
                 }
             }
@@ -959,6 +1106,7 @@ impl AppUi {
     }
 
     pub fn reset_library(&mut self, tracks: Vec<AudioTrack>, error: Option<String>) {
+        self.capacity_warning_started = None;
         self.tracks = tracks;
         self.cursor = 0;
         self.viewport_start = 0;
@@ -973,18 +1121,17 @@ impl AppUi {
     }
 
     pub fn clear_selection(&mut self) {
+        self.capacity_warning_started = None;
         if self.selected.iter().any(|&is_selected| is_selected) {
             self.selected.fill(false);
             self.selection_order.clear();
             self.selected_panel = false;
             self.armed = false;
-            if self.normalization_status.starts_with("EXCEEDS CAPACITY") {
-                self.clear_normalization_status();
-            }
         }
     }
 
     pub fn load_selection(&mut self, saved_paths: &[std::path::PathBuf]) -> usize {
+        self.capacity_warning_started = None;
         let (selected, order, missing) = match_tracks_ordered(&self.tracks, saved_paths);
         self.selected = selected;
         self.selection_order = order;
@@ -1068,7 +1215,9 @@ impl AppUi {
             self.library_error.as_deref(),
             profile,
         )?;
-        if self.selected_panel {
+        let capacity_warning =
+            capacity_warning_phase(self.capacity_warning_started.map(|start| start.elapsed()));
+        if self.selected_panel || capacity_warning.is_some() {
             draw_selected_panel(
                 canvas,
                 &self.tracks,
@@ -1076,6 +1225,7 @@ impl AppUi {
                 self.cursor,
                 self.focus_changed_at.elapsed(),
                 profile,
+                capacity_warning,
             )?;
         } else {
             draw_deck_monitor(
@@ -1242,13 +1392,12 @@ impl AppUi {
             1,
             total_color,
         )?;
-        text(
+        draw_capacity_limit(
             canvas,
             169,
             190,
-            &format!("SIDE {:02}:00", profile.side_duration_minutes),
-            1,
-            DIM,
+            profile,
+            capacity_warning_phase(self.capacity_warning_started.map(|start| start.elapsed())),
         )?;
         if let Some(status) = self.current_status() {
             text(canvas, 14, 197, &auto_scroll_text(status, 48), 1, AMBER)?;
@@ -1969,6 +2118,7 @@ fn draw_tracks(
         text(canvas, 19, 76, "NO AUDIO TRACKS", 1, AMBER)?;
         text(canvas, 19, 90, "ADD FILES TO", 1, CREAM)?;
         text(canvas, 19, 100, "THE TRACKS FOLDER", 1, CREAM)?;
+        text(canvas, 19, 140, "B BROWSE FOLDERS", 1, PHOSPHOR)?;
         if library_error.is_some() {
             text(canvas, 19, 120, "FOLDER UNAVAILABLE", 1, RED)?;
         }
@@ -2211,19 +2361,62 @@ mod tests {
         ui.handle_key(Keycode::Space, &profile);
         assert_eq!(ui.selected_tracks().len(), 2);
         assert!(!ui.selected[2]);
-        assert_eq!(ui.current_status(), Some("EXCEEDS CAPACITY (MAX 03:00)"));
+        assert_eq!(ui.current_status(), None);
+        assert!(ui.capacity_warning_started.is_some());
 
         // Deselect track 1
         ui.handle_key(Keycode::Up, &profile);
         ui.handle_key(Keycode::Space, &profile);
         assert_eq!(ui.selected_tracks().len(), 1);
         assert!(!ui.selected[1]);
+        assert!(ui.capacity_warning_started.is_none());
 
         // Now track 2 can be selected
         ui.handle_key(Keycode::Down, &profile);
         ui.handle_key(Keycode::Space, &profile);
         assert_eq!(ui.selected_tracks().len(), 2);
         assert!(ui.selected[2]);
+    }
+
+    #[test]
+    fn capacity_warning_blinks_and_expires() {
+        assert_eq!(capacity_warning_phase(None), None);
+        assert_eq!(capacity_warning_phase(Some(Duration::ZERO)), Some(true));
+        assert_eq!(
+            capacity_warning_phase(Some(Duration::from_millis(349))),
+            Some(true)
+        );
+        assert_eq!(
+            capacity_warning_phase(Some(Duration::from_millis(350))),
+            Some(false)
+        );
+        assert_eq!(
+            capacity_warning_phase(Some(Duration::from_millis(700))),
+            Some(true)
+        );
+        assert!(capacity_warning_phase(Some(STATUS_TIMEOUT - Duration::from_millis(1))).is_some());
+        assert_eq!(capacity_warning_phase(Some(STATUS_TIMEOUT)), None);
+    }
+
+    #[test]
+    fn first_oversized_track_warns_without_replacing_status_and_resets_cleanly() {
+        let mut profile = RuntimeProfile::default();
+        profile.side_duration_minutes = 1;
+        profile.leader_gap_seconds = 10;
+        let mut ui = AppUi::new(tracks(1), None);
+        ui.set_normalization_status("PROFILE SAVED");
+        ui.handle_key(Keycode::Space, &profile);
+        assert!(ui.selected_tracks().is_empty());
+        assert!(ui.capacity_warning_started.is_some());
+        assert_eq!(ui.current_status(), Some("PROFILE SAVED"));
+        ui.clear_selection();
+        assert!(ui.capacity_warning_started.is_none());
+        ui.handle_key(Keycode::Space, &profile);
+        ui.reset_library(tracks(1), None);
+        assert!(ui.capacity_warning_started.is_none());
+        ui.handle_key(Keycode::Space, &profile);
+        ui.load_selection(&[]);
+        assert!(ui.capacity_warning_started.is_none());
     }
 
     #[test]
@@ -2267,6 +2460,98 @@ mod tests {
         assert_eq!(ui.current_status(), Some("ANOTHER STATUS"));
         ui.clear_normalization_status();
         assert_eq!(ui.current_status(), None);
+    }
+
+    fn folder_browser_fixture() -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("deckprep-folders-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn track_folder_browser_navigates_selects_and_cancels() {
+        let root = folder_browser_fixture();
+        let child = root.join("Music Tracks");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(root.join("song.wav"), b"audio").unwrap();
+        let mut browser = TrackFolderBrowser::new(root.to_str().unwrap()).unwrap();
+        assert_eq!(browser.directories, vec![child.clone()]);
+        assert_eq!(browser.handle_key(Keycode::Return), None);
+        assert_eq!(browser.selected_folder(), child);
+        assert_eq!(browser.handle_key(Keycode::Space), Some(true));
+        assert_eq!(browser.handle_key(Keycode::Return), None);
+        assert_eq!(browser.selected_folder(), child);
+        browser.handle_key(Keycode::Backspace);
+        assert_eq!(browser.selected_folder(), root);
+        assert_eq!(browser.handle_key(Keycode::Escape), Some(false));
+        assert_eq!(browser.handle_key(Keycode::Q), Some(false));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn track_folder_browser_recovers_missing_paths_and_failed_navigation() {
+        let root = folder_browser_fixture();
+        let missing = root.join("missing").join("tracks");
+        let mut browser = TrackFolderBrowser::new(missing.to_str().unwrap()).unwrap();
+        assert_eq!(browser.selected_folder(), root);
+        assert_eq!(browser.handle_key(Keycode::Space), Some(true));
+        let child = root.join("removed");
+        std::fs::create_dir(&child).unwrap();
+        browser.open(root.clone());
+        std::fs::remove_dir(&child).unwrap();
+        browser.handle_key(Keycode::Return);
+        assert_eq!(browser.selected_folder(), root);
+        assert!(browser.error.is_some());
+        assert_eq!(browser.handle_key(Keycode::Space), None);
+        browser.open(root.clone());
+        assert!(browser.error.is_none());
+        assert_eq!(browser.handle_key(Keycode::Space), Some(true));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn track_folder_browser_scrolls_and_resets_on_folder_change() {
+        let root = folder_browser_fixture();
+        for index in 0..12 {
+            std::fs::create_dir(root.join(format!("folder-{index:02}"))).unwrap();
+        }
+        let mut browser = TrackFolderBrowser::new(root.to_str().unwrap()).unwrap();
+        browser.handle_key(Keycode::PageDown);
+        assert_eq!((browser.cursor, browser.viewport_start), (7, 1));
+        browser.handle_key(Keycode::End);
+        assert_eq!((browser.cursor, browser.viewport_start), (11, 5));
+        browser.handle_key(Keycode::Down);
+        assert_eq!(browser.cursor, 11);
+        browser.handle_key(Keycode::Home);
+        assert_eq!((browser.cursor, browser.viewport_start), (0, 0));
+        browser.handle_key(Keycode::Up);
+        assert_eq!(browser.cursor, 0);
+        browser.handle_key(Keycode::End);
+        browser.handle_key(Keycode::Right);
+        assert_eq!((browser.cursor, browser.viewport_start), (0, 0));
+        assert!(browser.directories.is_empty());
+        browser.handle_key(Keycode::PageDown);
+        browser.handle_key(Keycode::End);
+        assert_eq!(browser.cursor, 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn track_folder_browser_cannot_navigate_above_root() {
+        let mut browser = TrackFolderBrowser {
+            folder: PathBuf::from("/"),
+            directories: Vec::new(),
+            cursor: 0,
+            viewport_start: 0,
+            error: None,
+        };
+        browser.handle_key(Keycode::Left);
+        assert_eq!(browser.selected_folder(), std::path::Path::new("/"));
     }
 
     #[test]
@@ -2430,6 +2715,7 @@ fn draw_selected_panel(
     cursor: usize,
     focus_elapsed: Duration,
     profile: &RuntimeProfile,
+    capacity_warning: Option<bool>,
 ) -> Result<(), String> {
     fill(canvas, Rect::new(187, 37, 124, 170), PANEL)?;
     text(canvas, 194, 42, "SELECTED", 1, AMBER)?;
@@ -2493,14 +2779,7 @@ fn draw_selected_panel(
         1,
         total_color,
     )?;
-    text(
-        canvas,
-        194,
-        181,
-        &format!("MAX   {:02}:00", profile.side_duration_minutes),
-        1,
-        DIM,
-    )?;
+    draw_capacity_limit(canvas, 194, 181, profile, capacity_warning)?;
     text(
         canvas,
         194,
@@ -2509,6 +2788,41 @@ fn draw_selected_panel(
         1,
         DIM,
     )?;
+    Ok(())
+}
+
+fn capacity_warning_phase(elapsed: Option<Duration>) -> Option<bool> {
+    elapsed
+        .filter(|elapsed| *elapsed < STATUS_TIMEOUT)
+        .map(|elapsed| (elapsed.as_millis() / 350) % 2 == 0)
+}
+
+fn draw_capacity_limit(
+    canvas: &mut Canvas<Window>,
+    x: i32,
+    y: i32,
+    profile: &RuntimeProfile,
+    warning: Option<bool>,
+) -> Result<(), String> {
+    let label = format!("MAX {:02}:00", profile.side_duration_minutes);
+    if warning.is_some() {
+        let text_width = (label.chars().count() as u32 * 6).saturating_sub(1);
+        fill(
+            canvas,
+            Rect::new(x - 3, y - 2, text_width + 6, 11),
+            Color::RGB(180, 60, 52),
+        )?;
+    }
+    if warning != Some(false) {
+        text(
+            canvas,
+            x,
+            y,
+            &label,
+            1,
+            if warning.is_some() { CREAM } else { DIM },
+        )?;
+    }
     Ok(())
 }
 

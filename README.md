@@ -57,6 +57,8 @@ Controls:
 - `L`: browse and load deck profiles from `profiles/`; dynamically updates settings, tracks, and audio backend
 - `S`: save the active runtime settings as a reusable profile snapshot
 - `W`: open the in-app profile editor; `Ctrl+S` saves changes and `Escape` closes it
+- `F2` in the profile editor: browse for the tracks folder
+- `B` when the main library has no tracks: browse for a tracks folder and reload immediately
 - `Enter`: validate, normalize, countdown, and start the prep session
 - After normalization: review the prepared tracks, total session timing, tape side capacity, and remaining headroom (`REMAINING +/-S` in seconds); press `Enter` to continue or `Escape` to go back
 - In review: `Up`/`Down`, `Page Up`/`Page Down`, `Home`/`End` navigate; `P` previews the highlighted track
@@ -74,6 +76,14 @@ Press `W` in the application to open the profile editor. Use `Up`/`Down` to sele
 a field, `Left`/`Right` to change numeric and enum values, and type to edit text
 fields. `Backspace` deletes text. Press `Ctrl+S` to save and close, or `Escape` to close
 without saving.
+
+The tracks folder browser uses `Up`/`Down`, `Page Up`/`Page Down`, and `Home`/`End`
+to navigate folders, `Enter`/`Right` to open one, `Backspace`/`Left` to go to its
+parent, `Space` to use the current folder, and `Escape` to cancel. Missing paths
+start at their nearest existing parent. Audio files are loaded directly from the
+chosen folder, not recursively. In the profile editor, the chosen path remains
+unsaved until `Ctrl+S`, which also reloads the library. On the main page, press
+`S` after browsing to save the new location as a profile snapshot.
 
 Validate changes with:
 

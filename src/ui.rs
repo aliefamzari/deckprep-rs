@@ -1609,7 +1609,7 @@ impl AppUi {
         draw_counter(canvas, 22, 70, counter)?;
         draw_tape_reels(
             canvas,
-            205,
+            194,
             55,
             marquee_elapsed,
             counter_running,
@@ -1617,12 +1617,13 @@ impl AppUi {
             total,
         )?;
 
+        text(canvas, 14, 111, "TIME", 1, CREAM)?;
         text(
             canvas,
             14,
-            112,
+            122,
             &format!(
-                "TIME {:02}:{:02}/{:02}:{:02}/{:02}:{:02}",
+                "{:02}:{:02}/{:02}:{:02}/{:02}:{:02}",
                 progress / 60,
                 progress % 60,
                 total / 60,
@@ -1633,11 +1634,11 @@ impl AppUi {
             1,
             CREAM,
         )?;
-        progress_bar(canvas, 14, 126, progress, total, 164)?;
+        progress_bar(canvas, 14, 134, progress, total, 140)?;
 
         let current_label = current_track
             .and_then(|index| track_names.get(index))
-            .map(|name| scrolling_text(name, 27, marquee_elapsed))
+            .map(|name| scrolling_text(name, 23, marquee_elapsed))
             .unwrap_or_else(|| "STANDBY".to_owned());
         text(canvas, 14, 146, "NOW PLAYING", 1, AMBER)?;
         text(canvas, 14, 158, &current_label, 1, PHOSPHOR)?;
@@ -1657,7 +1658,7 @@ impl AppUi {
             1,
             CREAM,
         )?;
-        progress_bar(canvas, 14, 190, track_elapsed, track_total.max(1), 164)?;
+        progress_bar(canvas, 14, 190, track_elapsed, track_total.max(1), 140)?;
         let track_remaining = track_total.saturating_sub(track_elapsed);
         text(
             canvas,
@@ -1672,15 +1673,15 @@ impl AppUi {
             DIM,
         )?;
 
-        text(canvas, 194, 115, "OUTPUT", 1, AMBER)?;
-        text(canvas, 194, 127, "L", 1, DIM)?;
-        meter(canvas, 205, 126, meter_levels.0)?;
-        text(canvas, 194, 139, "R", 1, DIM)?;
-        meter(canvas, 205, 138, meter_levels.1)?;
-        text(canvas, 205, 150, "-40  -20  -6   0", 1, DIM)?;
+        text(canvas, 176, 115, "OUTPUT", 1, AMBER)?;
+        text(canvas, 176, 127, "L", 1, DIM)?;
+        meter(canvas, 187, 126, meter_levels.0)?;
+        text(canvas, 176, 139, "R", 1, DIM)?;
+        meter(canvas, 187, 138, meter_levels.1)?;
+        text(canvas, 187, 150, "-40  -20  -6   0", 1, DIM)?;
 
-        fill(canvas, Rect::new(187, 163, 124, 68), PANEL)?;
-        text(canvas, 194, 166, "SESSION TRACKS", 1, AMBER)?;
+        fill(canvas, Rect::new(163, 163, 148, 68), PANEL)?;
+        text(canvas, 170, 166, "SESSION TRACKS", 1, AMBER)?;
         let queue_start = current_track
             .unwrap_or(0)
             .saturating_sub(2)
@@ -1698,17 +1699,17 @@ impl AppUi {
                 CREAM
             };
             let display_name =
-                track_name_text(name, 15, current_track == Some(index), marquee_elapsed);
+                track_name_text(name, 19, current_track == Some(index), marquee_elapsed);
             if current_track == Some(index) {
                 fill(
                     canvas,
-                    Rect::new(191, 177 + row as i32 * 10, 116, 10),
+                    Rect::new(166, 177 + row as i32 * 10, 140, 10),
                     Color::RGB(42, 48, 43),
                 )?;
             }
             text(
                 canvas,
-                194,
+                170,
                 178 + row as i32 * 10,
                 &format!("{:02} {}", index + 1, display_name),
                 1,
@@ -2851,8 +2852,20 @@ mod tests {
                 track_progress,
             )
             .unwrap();
+            for y in 55..230 {
+                assert_eq!(
+                    canvas
+                        .read_pixels(
+                            Rect::new(160, y, 1, 1),
+                            sdl2::pixels::PixelFormatEnum::RGB24
+                        )
+                        .unwrap(),
+                    vec![BACKGROUND.r, BACKGROUND.g, BACKGROUND.b],
+                    "recording content crosses the center gutter at y={y}"
+                );
+            }
             if current.is_some() {
-                for (x, y) in [(20, 128), (20, 192), (206, 127), (206, 139)] {
+                for (x, y) in [(20, 136), (20, 192), (188, 127), (188, 139)] {
                     assert_eq!(
                         canvas
                             .read_pixels(
@@ -2863,7 +2876,7 @@ mod tests {
                         vec![PHOSPHOR.r, PHOSPHOR.g, PHOSPHOR.b]
                     );
                 }
-                for (x, y) in [(180, 128), (180, 192)] {
+                for (x, y) in [(160, 136), (160, 192)] {
                     assert_eq!(
                         canvas
                             .read_pixels(
@@ -2877,7 +2890,7 @@ mod tests {
                 assert_eq!(
                     canvas
                         .read_pixels(
-                            Rect::new(192, 198, 1, 1),
+                            Rect::new(167, 198, 1, 1),
                             sdl2::pixels::PixelFormatEnum::RGB24
                         )
                         .unwrap(),

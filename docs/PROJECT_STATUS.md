@@ -56,7 +56,7 @@ The four intended stages are implemented:
 
 Additional workflow features:
 
-- Recording uses a two-column layout: TIME elapsed/total/left and half-width session progress on the left; cassette animation above stereo output meters on the right. Now Playing includes track elapsed/total time, its own progress bar, and remaining time; a five-row scrolling session list occupies the lower right.
+- Recording uses an equal-width 50:50 two-column layout with a centered gutter: TIME elapsed/total/left and session progress on the left; cassette animation above stereo output meters on the right. Now Playing includes track elapsed/total time, its own progress bar, and remaining time; a five-row scrolling session list occupies the lower right.
 - Peak normalization and LUFS normalization through FFmpeg.
 - Optional `none` normalization in profiles, wizard, and editor uses original source files for preview and recording without conversion or normalized cache writes.
 - Background normalization for N and Enter shows the current file, method, completed-track progress, and cache hits; Escape/Q cancels between tracks. Review labels original files as ORIG; preparation failures return to the main screen.

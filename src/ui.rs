@@ -1561,6 +1561,23 @@ impl AppUi {
         Ok(())
     }
 
+    pub fn render_recording_loading(
+        &self,
+        canvas: &mut Canvas<Window>,
+        profile: &RuntimeProfile,
+    ) -> Result<(), String> {
+        self.render(canvas, profile, None)?;
+        let previous_blend_mode = canvas.blend_mode();
+        canvas.set_blend_mode(BlendMode::Blend);
+        fill(canvas, Rect::new(0, 0, 320, 240), Color::RGBA(0, 0, 0, 180))?;
+        canvas.set_blend_mode(previous_blend_mode);
+        fill(canvas, Rect::new(38, 86, 244, 68), PANEL)?;
+        outline(canvas, Rect::new(38, 86, 244, 68), AMBER)?;
+        text(canvas, 58, 102, "LOADING RECORDING", 2, PHOSPHOR)?;
+        text(canvas, 85, 132, "PREPARING AUDIO AND METERS", 1, CREAM)?;
+        Ok(())
+    }
+
     pub fn render_recording(
         &self,
         canvas: &mut Canvas<Window>,
@@ -2818,6 +2835,42 @@ mod tests {
         let mut canvas = window.into_canvas().software().build().unwrap();
         let mut profile = RuntimeProfile::default();
         profile.name = "Nakamichi DR-1".to_owned();
+        let loading_ui = AppUi::new(Vec::new(), None);
+        loading_ui
+            .render_recording_loading(&mut canvas, &profile)
+            .unwrap();
+        for (x, y) in [(38, 86), (281, 86), (38, 153), (281, 153)] {
+            assert_eq!(
+                canvas
+                    .read_pixels(Rect::new(x, y, 1, 1), sdl2::pixels::PixelFormatEnum::RGB24)
+                    .unwrap(),
+                vec![AMBER.r, AMBER.g, AMBER.b]
+            );
+        }
+        assert_eq!(
+            canvas
+                .read_pixels(
+                    Rect::new(160, 120, 1, 1),
+                    sdl2::pixels::PixelFormatEnum::RGB24
+                )
+                .unwrap(),
+            vec![PANEL.r, PANEL.g, PANEL.b]
+        );
+        if let Ok(path) = std::env::var("DECKPREP_LOADING_SCREENSHOT") {
+            let mut pixels = canvas
+                .read_pixels(None, sdl2::pixels::PixelFormatEnum::RGB24)
+                .unwrap();
+            sdl2::surface::Surface::from_data(
+                &mut pixels,
+                320,
+                240,
+                960,
+                sdl2::pixels::PixelFormatEnum::RGB24,
+            )
+            .unwrap()
+            .save_bmp(path)
+            .unwrap();
+        }
         for (elapsed, total, elapsed_label, remaining_label) in [
             (0, 0, "00:00", "00:00"),
             (0, 7200, "00:00", "120:00"),

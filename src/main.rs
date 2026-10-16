@@ -696,6 +696,8 @@ fn main() -> Result<(), String> {
 
         if start_reviewed_prep {
             leave_review(&mut review, &mut player, &mut preview_meter, &mut ui)?;
+            ui.render_recording_loading(&mut canvas, &profile)?;
+            canvas.present();
             match PrepSession::start(&ui.selected_tracks(), &profile) {
                 Ok(session) => {
                     ui.set_normalization_status(format!(
@@ -715,6 +717,8 @@ fn main() -> Result<(), String> {
                 preparation = start_preparation(&mut ui, &profile, true);
             } else {
                 leave_review(&mut review, &mut player, &mut preview_meter, &mut ui)?;
+                ui.render_recording_loading(&mut canvas, &profile)?;
+                canvas.present();
                 match PrepSession::start(&ui.selected_tracks(), &profile) {
                     Ok(session) => {
                         ui.set_normalization_status(format!(

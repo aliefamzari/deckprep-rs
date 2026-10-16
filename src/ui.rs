@@ -41,7 +41,7 @@ pub struct AppUi {
     preview_paused: bool,
     normalization_status: String,
     status_updated_at: Option<Instant>,
-    test_tone_preview: Option<(std::path::PathBuf, TestTone)>,
+    test_tone_preview: Option<(std::path::PathBuf, String)>,
     test_tone_status: Option<String>,
     capacity_warning_started: Option<Instant>,
     prep_requested: bool,
@@ -1185,17 +1185,21 @@ impl AppUi {
     }
 
     pub fn set_test_tone_preview(&mut self, path: &std::path::Path, tone: TestTone) {
-        self.test_tone_preview = Some((path.to_path_buf(), tone));
+        self.set_track_preview(path, &format!("TEST TONE {}", tone.label()));
+    }
+
+    pub fn set_track_preview(&mut self, path: &std::path::Path, name: &str) {
+        self.test_tone_preview = Some((path.to_path_buf(), name.to_owned()));
         self.sync_test_tone_preview(Some(path), false);
     }
 
     pub fn sync_test_tone_preview(&mut self, current_path: Option<&std::path::Path>, paused: bool) {
-        if let Some((path, tone)) = &self.test_tone_preview {
+        if let Some((path, label)) = &self.test_tone_preview {
             if current_path == Some(path.as_path()) {
                 self.test_tone_status = Some(format!(
-                    "{} TEST TONE {}",
+                    "{} {}",
                     if paused { "PAUSED" } else { "PLAYING" },
-                    tone.label()
+                    label
                 ));
             } else {
                 self.test_tone_preview = None;
@@ -2672,8 +2676,43 @@ mod tests {
     }
 
     #[test]
+    fn track_preview_status_tracks_playback_until_stop() {
+        let mut ui = AppUi::new(tracks(2), None);
+        let path = std::path::Path::new("cache/normalized.wav");
+        ui.set_track_preview(path, "My Track.flac");
+        ui.set_normalization_status("OTHER NOTICE");
+        ui.status_updated_at = Some(Instant::now() - Duration::from_secs(4));
+        assert_eq!(ui.current_status(), Some("PLAYING My Track.flac"));
+        ui.clear_normalization_status();
+        assert_eq!(ui.current_status(), Some("PLAYING My Track.flac"));
+        ui.sync_test_tone_preview(Some(path), true);
+        assert_eq!(ui.current_status(), Some("PAUSED My Track.flac"));
+        ui.sync_test_tone_preview(Some(path), false);
+        ui.handle_key(Keycode::Down, &RuntimeProfile::default());
+        assert_eq!(ui.current_status(), Some("PLAYING My Track.flac"));
+        ui.sync_test_tone_preview(None, false);
+        assert_eq!(ui.current_status(), None);
+    }
+
+    #[test]
+    fn track_preview_status_updates_on_switch_and_clears_on_exit() {
+        let mut ui = AppUi::new(tracks(2), None);
+        let first_path = std::path::Path::new("first.flac");
+        let next_path = std::path::Path::new("second.wav");
+        ui.set_track_preview(first_path, "First.flac");
+        ui.set_track_preview(next_path, "Second.wav");
+        ui.sync_test_tone_preview(Some(next_path), false);
+        assert_eq!(ui.current_status(), Some("PLAYING Second.wav"));
+        ui.set_previewing(false, false);
+        assert_eq!(ui.current_status(), None);
+        ui.set_track_preview(first_path, "First.flac");
+        ui.set_test_tone_preview(next_path, TestTone::Hz400);
+        assert_eq!(ui.current_status(), Some("PLAYING TEST TONE 400Hz (Level)"));
+    }
+
+    #[test]
     #[ignore = "requires SDL video; run with SDL_VIDEODRIVER=dummy"]
-    fn test_tone_meters_override_queue_panels_and_restore_previous_view() {
+    fn preview_meters_override_queue_panels_and_restore_previous_view() {
         let sdl = sdl2::init().unwrap();
         let video = sdl.video().unwrap();
         let window = video
@@ -2683,7 +2722,8 @@ mod tests {
             .unwrap();
         let mut canvas = window.into_canvas().software().build().unwrap();
         let profile = RuntimeProfile::default();
-        for queue_view in [false, true] {
+        for (queue_view, test_tone) in [(false, false), (true, false), (false, true), (true, true)]
+        {
             let mut ui = AppUi::new(tracks(1), None);
             ui.handle_key(Keycode::Space, &profile);
             ui.queue_view = queue_view;
@@ -2696,7 +2736,11 @@ mod tests {
                 .unwrap();
             assert_ne!(previous_pixel, vec![PHOSPHOR.r, PHOSPHOR.g, PHOSPHOR.b]);
 
-            ui.set_test_tone_preview(std::path::Path::new("tone.wav"), TestTone::Hz400);
+            if test_tone {
+                ui.set_test_tone_preview(std::path::Path::new("tone.wav"), TestTone::Hz400);
+            } else {
+                ui.set_track_preview(std::path::Path::new("track.flac"), "Track.flac");
+            }
             ui.set_previewing(true, false);
             ui.render(&mut canvas, &profile, Some((8, 8))).unwrap();
             let meter_pixel = canvas

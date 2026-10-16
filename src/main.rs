@@ -392,6 +392,11 @@ fn main() -> Result<(), String> {
                                         player.play(&path)?;
                                     }
                                     preview_meter = Some(StereoMeter::analyze(&path)?);
+                                    ui.set_track_preview(&path, &track.name);
+                                    ui.sync_test_tone_preview(
+                                        player.current_path(),
+                                        player.is_paused(),
+                                    );
                                     if let Some(active_review) = review.as_mut() {
                                         active_review.preview_status = "PLAY".to_owned();
                                     }
@@ -540,7 +545,6 @@ fn main() -> Result<(), String> {
                         },
                         Keycode::P => {
                             if let Some(track) = ui.current_track().cloned() {
-                                ui.set_selected_panel(false);
                                 let path = normalized_playback_path(&track, &profile)?;
                                 if player.current_path() == Some(path.as_path()) {
                                     player.toggle(&path)?;
@@ -548,7 +552,11 @@ fn main() -> Result<(), String> {
                                     player.play(&path)?;
                                 }
                                 preview_meter = Some(StereoMeter::analyze(&path)?);
-                                ui.set_normalization_status("NORMALIZED PREVIEW");
+                                ui.set_track_preview(&path, &track.name);
+                                ui.sync_test_tone_preview(
+                                    player.current_path(),
+                                    player.is_paused(),
+                                );
                             }
                         }
                         Keycode::X => {

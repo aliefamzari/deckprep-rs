@@ -1636,6 +1636,7 @@ impl AppUi {
             counter_running,
             progress,
             total,
+            phase.starts_with("LEADER GAP "),
         )?;
 
         text(
@@ -1786,6 +1787,7 @@ fn draw_tape_reels(
     rotating: bool,
     progress: u32,
     total: u32,
+    leader_tape: bool,
 ) -> Result<(), String> {
     // Standard audio cassette aspect ratio: 100mm x 64mm (approx 1.56 : 1)
     // Scaled for pixel display: 84px wide x 54px high (~1.55 : 1)
@@ -1795,7 +1797,11 @@ fn draw_tape_reels(
     let cassette_label = Color::RGB(34, 40, 36);
     let label_border = Color::RGB(55, 65, 58);
     let tape_pack_color = Color::RGB(70, 50, 42);
-    let tape_path_color = Color::RGBA(125, 90, 70, 160);
+    let tape_path_color = if leader_tape {
+        Color::RGB(196, 204, 196)
+    } else {
+        Color::RGBA(125, 90, 70, 160)
+    };
     let window_bg = Color::RGB(10, 12, 11);
 
     // Cassette shell body & outer bevel
@@ -1963,6 +1969,37 @@ fn draw_tape_reels(
         (left_roller.0 + 3, trap_y + 7),
         (right_roller.0 - 3, trap_y + 7),
     )?;
+    if leader_tape && rotating {
+        let movement = (elapsed.as_millis() / 70 % 12) as usize;
+        let mut distance = 0;
+        canvas.set_draw_color(Color::RGB(250, 252, 244));
+        for (start, end) in [
+            (
+                (left_tangent_x, left_center.1),
+                (left_roller.0 - 2, left_roller.1),
+            ),
+            (
+                (left_roller.0 + 3, trap_y + 7),
+                (right_roller.0 - 3, trap_y + 7),
+            ),
+            (
+                (right_roller.0 + 2, right_roller.1),
+                (right_tangent_x, right_center.1),
+            ),
+        ] {
+            let steps = (end.0 - start.0).abs().max((end.1 - start.1).abs()) as usize;
+            for step in 0..=steps {
+                if ((distance + step) % 12 + 12 - movement) % 12 < 2 {
+                    let fraction = step as f64 / steps.max(1) as f64;
+                    canvas.draw_point((
+                        start.0 + (f64::from(end.0 - start.0) * fraction).round() as i32,
+                        start.1 + (f64::from(end.1 - start.1) * fraction).round() as i32,
+                    ))?;
+                }
+            }
+            distance += steps + 1;
+        }
+    }
     canvas.set_blend_mode(BlendMode::None);
 
     // Draw the left and right roller guides with spinning flutes and center pins
@@ -2863,6 +2900,83 @@ mod tests {
         ui.set_test_tone_preview(next_path, TestTone::Hz1000);
         ui.sync_test_tone_preview(Some(next_path), false);
         assert_eq!(ui.current_status(), Some("PLAYING TEST TONE 1kHz (Ref)"));
+    }
+
+    #[test]
+    #[ignore = "requires SDL video; run with SDL_VIDEODRIVER=dummy"]
+    fn leader_tape_moves_in_white_only_during_leader_gap() {
+        let sdl = sdl2::init().unwrap();
+        let video = sdl.video().unwrap();
+        let window = video
+            .window("leader tape regression", 320, 240)
+            .hidden()
+            .build()
+            .unwrap();
+        let mut canvas = window.into_canvas().software().build().unwrap();
+        let ui = AppUi::new(Vec::new(), None);
+        let profile = RuntimeProfile::default();
+        let mut frames = Vec::new();
+        for (phase, elapsed) in [
+            ("LEADER GAP 10S - Q CANCEL", 0),
+            ("LEADER GAP 10S - Q CANCEL", 70),
+            ("RECORDING 1/1", 140),
+        ] {
+            ui.render_recording(
+                &mut canvas,
+                &profile,
+                phase,
+                &["Track.flac".to_owned()],
+                None,
+                0,
+                1800,
+                0,
+                (0, 0),
+                Duration::from_millis(elapsed),
+                true,
+                None,
+            )
+            .unwrap();
+            let pixels = canvas
+                .read_pixels(
+                    Rect::new(211, 103, 12, 1),
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap();
+            if phase.starts_with("LEADER GAP") {
+                assert!(
+                    pixels
+                        .chunks_exact(3)
+                        .all(|pixel| pixel == [196, 204, 196] || pixel == [250, 252, 244])
+                );
+                assert!(pixels.chunks_exact(3).any(|pixel| pixel == [250, 252, 244]));
+                frames.push(pixels);
+                if let Ok(path) = std::env::var("DECKPREP_LEADER_SCREENSHOT") {
+                    let mut image = canvas
+                        .read_pixels(None, sdl2::pixels::PixelFormatEnum::RGB24)
+                        .unwrap();
+                    sdl2::surface::Surface::from_data(
+                        &mut image,
+                        320,
+                        240,
+                        960,
+                        sdl2::pixels::PixelFormatEnum::RGB24,
+                    )
+                    .unwrap()
+                    .save_bmp(path)
+                    .unwrap();
+                }
+            } else {
+                assert!(
+                    pixels
+                        .chunks_exact(3)
+                        .all(|pixel| pixel != [196, 204, 196] && pixel != [250, 252, 244])
+                );
+            }
+        }
+        assert_ne!(
+            frames[0], frames[1],
+            "leader highlights must move between frames"
+        );
     }
 
     #[test]

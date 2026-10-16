@@ -2,7 +2,6 @@ use std::{
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -160,10 +159,6 @@ impl RuntimeProfile {
         let folder = folder.as_ref();
         fs::create_dir_all(folder)
             .map_err(|error| format!("failed to create {}: {error}", folder.display()))?;
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("system clock error: {error}"))?
-            .as_secs();
         let stem: String = self
             .name
             .chars()
@@ -176,11 +171,7 @@ impl RuntimeProfile {
             })
             .collect();
         let stem = stem.trim_matches('-');
-        let filename = format!(
-            "{}-{}.json",
-            if stem.is_empty() { "deck" } else { stem },
-            timestamp
-        );
+        let filename = format!("{}.json", if stem.is_empty() { "deck" } else { stem });
         let path = folder.join(filename);
         let temporary_path = folder.join(format!(
             ".{}.tmp",
@@ -262,11 +253,17 @@ mod tests {
 
     #[test]
     fn saves_reusable_profile_snapshot() {
-        let profile = valid_profile();
+        let mut profile = valid_profile();
+        profile.name = "My Deck".to_owned();
         let folder = std::env::temp_dir().join("deckprep-profile-test");
         let path = profile.save_snapshot(&folder).unwrap();
+        assert_eq!(path, folder.join("my-deck.json"));
         let loaded = RuntimeProfile::load(&path).unwrap();
         assert_eq!(loaded, profile);
+        profile.side_duration_minutes = 45;
+        let updated_path = profile.save_snapshot(&folder).unwrap();
+        assert_eq!(updated_path, path);
+        assert_eq!(RuntimeProfile::load(&updated_path).unwrap(), profile);
         assert!(
             !path
                 .with_file_name(format!(

@@ -37,6 +37,7 @@ The original Python implementation remains the behavioral reference in the sibli
 - Built-in calibration test-tone generator with keys 1-5 (400 Hz level calibration, 1 kHz reference, 10 kHz bias, 15 kHz azimuth, and 20 Hz-20 kHz logarithmic sweep).
 - Command-line audio diagnostics via `--audio-diagnostics [profile.json]` to inspect FFplay/FFmpeg binaries, report ALSA cards from `/proc/asound/cards`, and recommend device strings for USB DACs like the iBasso D-Zero.
 - Preview does not change automatically while navigating; P explicitly previews the highlighted track.
+- Leaving normalization review with Escape/Q or proceeding with Enter stops preview audio and clears playback/meter state before the main screen or recording countdown.
 - Preview uses normalized cached WAV output.
 - Stereo RMS analysis with 50 ms windows for main-screen and recording-mode meters.
 

@@ -328,6 +328,21 @@ mod tests {
     }
 
     #[test]
+    fn stopping_paused_preview_clears_resumable_state() {
+        let mut player = AudioPlayer::new("sdl", "default");
+        player.current_path = Some(PathBuf::from("review-preview.flac"));
+        player.position_seconds = 12.0;
+        player.paused = true;
+        player.stop().unwrap();
+        assert!(!player.is_playing());
+        assert!(!player.is_paused());
+        assert_eq!(player.current_path(), None);
+        assert_eq!(player.position_seconds(), 0.0);
+        player.resume().unwrap();
+        assert!(!player.is_playing());
+    }
+
+    #[test]
     fn parse_alsa_proc_cards_detects_ibasso_dzero() {
         let mock_proc = " 0 [bcm2835_hdmi  ]: bcm2835_hdmi - bcm2835 HDMI 1\n 1 [DZero          ]: USB-Audio - iBasso D-Zero\n";
         let (cards, recs) = parse_alsa_cards(mock_proc);

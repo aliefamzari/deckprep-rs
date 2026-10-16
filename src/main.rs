@@ -158,7 +158,7 @@ fn main() -> Result<(), String> {
                     } else if profile_browser.is_some() {
                         profile_browser = None;
                     } else if review.is_some() {
-                        review = None;
+                        leave_review(&mut review, &mut player, &mut preview_meter, &mut ui)?;
                     } else if ui.current_status().is_some() {
                         ui.clear_normalization_status();
                     } else {
@@ -191,7 +191,7 @@ fn main() -> Result<(), String> {
                     } else if profile_browser.is_some() {
                         profile_browser = None;
                     } else if review.is_some() {
-                        review = None;
+                        leave_review(&mut review, &mut player, &mut preview_meter, &mut ui)?;
                     } else {
                         break 'running;
                     }
@@ -395,7 +395,12 @@ fn main() -> Result<(), String> {
                                 }
                             }
                             Keycode::Return => {
-                                review = None;
+                                leave_review(
+                                    &mut review,
+                                    &mut player,
+                                    &mut preview_meter,
+                                    &mut ui,
+                                )?;
                                 start_reviewed_prep = true;
                             }
                             Keycode::Num1 | Keycode::Kp1 => play_test_tone_preview(
@@ -438,7 +443,14 @@ fn main() -> Result<(), String> {
                                 &mut review,
                                 &profile,
                             )?,
-                            Keycode::Escape | Keycode::Q => review = None,
+                            Keycode::Escape | Keycode::Q => {
+                                leave_review(
+                                    &mut review,
+                                    &mut player,
+                                    &mut preview_meter,
+                                    &mut ui,
+                                )?;
+                            }
                             _ => {}
                         }
                         continue;
@@ -653,7 +665,7 @@ fn main() -> Result<(), String> {
         }
 
         if start_reviewed_prep {
-            review = None;
+            leave_review(&mut review, &mut player, &mut preview_meter, &mut ui)?;
             match PrepSession::start(&ui.selected_tracks(), &profile) {
                 Ok(session) => {
                     ui.set_normalization_status(format!(
@@ -672,7 +684,7 @@ fn main() -> Result<(), String> {
             if review.is_none() {
                 preparation = start_preparation(&mut ui, &profile, true);
             } else {
-                review = None;
+                leave_review(&mut review, &mut player, &mut preview_meter, &mut ui)?;
                 match PrepSession::start(&ui.selected_tracks(), &profile) {
                     Ok(session) => {
                         ui.set_normalization_status(format!(
@@ -742,6 +754,19 @@ fn main() -> Result<(), String> {
         thread::sleep(Duration::from_millis(8));
     }
 
+    Ok(())
+}
+
+fn leave_review(
+    review: &mut Option<NormalizationReview>,
+    player: &mut AudioPlayer,
+    preview_meter: &mut Option<StereoMeter>,
+    ui: &mut AppUi,
+) -> Result<(), String> {
+    player.stop()?;
+    *preview_meter = None;
+    ui.set_previewing(false, false);
+    *review = None;
     Ok(())
 }
 
@@ -848,4 +873,48 @@ fn play_test_tone_preview(
         active_review.preview_status = label;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leaving_review_stops_preview_and_clears_view_and_meter() {
+        let root = std::env::temp_dir().join(format!(
+            "deckprep-review-exit-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let tone = generate_test_tone(TestTone::Hz400, &root).unwrap();
+        let mut meter = Some(StereoMeter::analyze(&tone).unwrap());
+        let mut player = AudioPlayer::new("sdl", "default");
+        player.play(&root.join("missing-preview.wav")).unwrap();
+        assert!(player.is_playing());
+        let mut ui = AppUi::new(Vec::new(), None);
+        ui.set_previewing(true, false);
+        let mut review = Some(NormalizationReview {
+            tracks: Vec::new(),
+            total_seconds: 0,
+            capacity_seconds: 1800,
+            preview_status: "PLAY".to_owned(),
+            cursor: 0,
+            viewport_start: 0,
+            focus_changed_at: Instant::now(),
+        });
+
+        leave_review(&mut review, &mut player, &mut meter, &mut ui).unwrap();
+
+        assert!(review.is_none());
+        assert!(meter.is_none());
+        assert!(!ui.previewing());
+        assert!(!player.is_playing());
+        assert!(!player.is_paused());
+        assert_eq!(player.current_path(), None);
+        assert_eq!(player.position_seconds(), 0.0);
+        leave_review(&mut review, &mut player, &mut meter, &mut ui).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

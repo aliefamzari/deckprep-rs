@@ -26,6 +26,7 @@ const AMBER: Color = Color::RGB(242, 178, 74);
 const CREAM: Color = Color::RGB(220, 218, 196);
 const DIM: Color = Color::RGB(88, 101, 91);
 const RED: Color = Color::RGB(211, 76, 65);
+const RECORDING_PROGRESS: Color = Color::RGB(38, 96, 57);
 const VISIBLE_TRACKS: usize = 7;
 const TRACK_NAME_WIDTH: usize = 14;
 pub const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1603,7 +1604,6 @@ impl AppUi {
         text(canvas, 14, 43, &auto_scroll_text(phase, 48), 1, AMBER)?;
         let total = total_seconds.max(1);
         let progress = elapsed_seconds.min(total);
-        let remaining = total.saturating_sub(progress);
 
         text(canvas, 14, 57, "TAPE COUNTER", 1, CREAM)?;
         draw_counter(canvas, 22, 70, counter)?;
@@ -1617,24 +1617,19 @@ impl AppUi {
             total,
         )?;
 
-        text(canvas, 14, 111, "TIME", 1, CREAM)?;
         text(
             canvas,
             14,
-            122,
+            111,
             &format!(
-                "{:02}:{:02}/{:02}:{:02}/{:02}:{:02}",
-                progress / 60,
-                progress % 60,
-                total / 60,
-                total % 60,
-                remaining / 60,
-                remaining % 60
+                "TOTAL TIME: {:02}:{:02}",
+                total_seconds / 60,
+                total_seconds % 60
             ),
             1,
             CREAM,
         )?;
-        progress_bar(canvas, 14, 134, progress, total, 140)?;
+        recording_progress_bar(canvas, 14, 125, elapsed_seconds, total_seconds, 140)?;
 
         let current_label = current_track
             .and_then(|index| track_names.get(index))
@@ -1649,29 +1644,14 @@ impl AppUi {
             14,
             177,
             &format!(
-                "{:02}:{:02} / {:02}:{:02}",
-                track_elapsed / 60,
-                track_elapsed % 60,
+                "TOTAL TIME: {:02}:{:02}",
                 track_total / 60,
                 track_total % 60
             ),
             1,
             CREAM,
         )?;
-        progress_bar(canvas, 14, 190, track_elapsed, track_total.max(1), 140)?;
-        let track_remaining = track_total.saturating_sub(track_elapsed);
-        text(
-            canvas,
-            14,
-            208,
-            &format!(
-                "LEFT {:02}:{:02}",
-                track_remaining / 60,
-                track_remaining % 60
-            ),
-            1,
-            DIM,
-        )?;
+        recording_progress_bar(canvas, 14, 190, track_elapsed, track_total, 140)?;
 
         text(canvas, 176, 115, "OUTPUT", 1, AMBER)?;
         text(canvas, 176, 127, "L", 1, DIM)?;
@@ -2252,19 +2232,31 @@ fn draw_reel_hub(
     Ok(())
 }
 
-fn progress_bar(
+fn recording_progress_bar(
     canvas: &mut Canvas<Window>,
     x: i32,
     y: i32,
-    value: u32,
+    elapsed: u32,
     total: u32,
     width: i32,
 ) -> Result<(), String> {
-    outline(canvas, Rect::new(x, y, width as u32, 8), DIM)?;
-    let filled = width * value.min(total) as i32 / total.max(1) as i32;
+    let elapsed = elapsed.min(total);
+    let remaining = total.saturating_sub(elapsed);
+    fill(canvas, Rect::new(x, y, width as u32, 17), PANEL)?;
+    let filled = (u64::from(elapsed) * (width - 2) as u64 / u64::from(total.max(1))) as u32;
     if filled > 0 {
-        fill(canvas, Rect::new(x + 1, y + 1, filled as u32, 6), PHOSPHOR)?;
+        fill(
+            canvas,
+            Rect::new(x + 1, y + 1, filled, 15),
+            RECORDING_PROGRESS,
+        )?;
     }
+    outline(canvas, Rect::new(x, y, width as u32, 17), DIM)?;
+    let elapsed_label = format!("{:02}:{:02}", elapsed / 60, elapsed % 60);
+    let remaining_label = format!("{:02}:{:02}", remaining / 60, remaining % 60);
+    text(canvas, x + 4, y + 5, &elapsed_label, 1, CREAM)?;
+    let remaining_x = x + width - 4 - remaining_label.chars().count() as i32 * 6;
+    text(canvas, remaining_x, y + 5, &remaining_label, 1, CREAM)?;
     Ok(())
 }
 
@@ -2826,6 +2818,45 @@ mod tests {
         let mut canvas = window.into_canvas().software().build().unwrap();
         let mut profile = RuntimeProfile::default();
         profile.name = "Nakamichi DR-1".to_owned();
+        for (elapsed, total, elapsed_label, remaining_label) in [
+            (0, 0, "00:00", "00:00"),
+            (0, 7200, "00:00", "120:00"),
+            (90, 180, "01:30", "01:30"),
+            (999, 180, "03:00", "00:00"),
+            (7199, 7200, "119:59", "00:01"),
+        ] {
+            canvas.set_draw_color(BACKGROUND);
+            canvas.clear();
+            recording_progress_bar(&mut canvas, 14, 125, elapsed, total, 140).unwrap();
+            let remaining_x = 150 - remaining_label.len() as i32 * 6;
+            text(&mut canvas, 18, 10, elapsed_label, 1, CREAM).unwrap();
+            text(&mut canvas, remaining_x, 10, remaining_label, 1, CREAM).unwrap();
+            for (x, label) in [(18, elapsed_label), (remaining_x, remaining_label)] {
+                let text_mask = |pixels: Vec<u8>| {
+                    pixels
+                        .chunks_exact(3)
+                        .map(|pixel| pixel == [CREAM.r, CREAM.g, CREAM.b])
+                        .collect::<Vec<_>>()
+                };
+                let actual = canvas
+                    .read_pixels(
+                        Rect::new(x, 130, label.len() as u32 * 6, 7),
+                        sdl2::pixels::PixelFormatEnum::RGB24,
+                    )
+                    .unwrap();
+                let expected = canvas
+                    .read_pixels(
+                        Rect::new(x, 10, label.len() as u32 * 6, 7),
+                        sdl2::pixels::PixelFormatEnum::RGB24,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    text_mask(actual),
+                    text_mask(expected),
+                    "bar label {label} at {elapsed}/{total}"
+                );
+            }
+        }
         let names: Vec<String> = (0..12)
             .map(|index| format!("Track {:02} - A long recording title.flac", index + 1))
             .collect();
@@ -2865,7 +2896,12 @@ mod tests {
                 );
             }
             if current.is_some() {
-                for (x, y) in [(20, 136), (20, 192), (188, 127), (188, 139)] {
+                for (x, y, color) in [
+                    (20, 127, RECORDING_PROGRESS),
+                    (20, 192, RECORDING_PROGRESS),
+                    (188, 127, PHOSPHOR),
+                    (188, 139, PHOSPHOR),
+                ] {
                     assert_eq!(
                         canvas
                             .read_pixels(
@@ -2873,7 +2909,7 @@ mod tests {
                                 sdl2::pixels::PixelFormatEnum::RGB24
                             )
                             .unwrap(),
-                        vec![PHOSPHOR.r, PHOSPHOR.g, PHOSPHOR.b]
+                        vec![color.r, color.g, color.b]
                     );
                 }
                 for (x, y) in [(160, 136), (160, 192)] {

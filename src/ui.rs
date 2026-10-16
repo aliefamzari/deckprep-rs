@@ -1636,7 +1636,8 @@ impl AppUi {
             counter_running,
             progress,
             total,
-            phase.starts_with("LEADER GAP "),
+            (profile.leader_gap_seconds > 0 && !phase.starts_with("PREP "))
+                .then_some(Duration::from_secs(u64::from(profile.leader_gap_seconds))),
         )?;
 
         text(
@@ -1787,7 +1788,7 @@ fn draw_tape_reels(
     rotating: bool,
     progress: u32,
     total: u32,
-    leader_tape: bool,
+    leader_duration: Option<Duration>,
 ) -> Result<(), String> {
     // Standard audio cassette aspect ratio: 100mm x 64mm (approx 1.56 : 1)
     // Scaled for pixel display: 84px wide x 54px high (~1.55 : 1)
@@ -1797,11 +1798,7 @@ fn draw_tape_reels(
     let cassette_label = Color::RGB(34, 40, 36);
     let label_border = Color::RGB(55, 65, 58);
     let tape_pack_color = Color::RGB(70, 50, 42);
-    let tape_path_color = if leader_tape {
-        Color::RGB(196, 204, 196)
-    } else {
-        Color::RGBA(125, 90, 70, 160)
-    };
+    let tape_path_color = Color::RGBA(125, 90, 70, 160);
     let window_bg = Color::RGB(10, 12, 11);
 
     // Cassette shell body & outer bevel
@@ -1969,10 +1966,13 @@ fn draw_tape_reels(
         (left_roller.0 + 3, trap_y + 7),
         (right_roller.0 - 3, trap_y + 7),
     )?;
-    if leader_tape && rotating {
+    if let Some(leader_duration) = leader_duration {
         let movement = (elapsed.as_millis() / 70 % 12) as usize;
         let mut distance = 0;
-        canvas.set_draw_color(Color::RGB(250, 252, 244));
+        let supply_steps = (left_roller.0 - 2 - left_tangent_x).abs()
+            .max((left_roller.1 - left_center.1).abs());
+        let head_distance = supply_steps + 1 + head_center_x - (left_roller.0 + 3);
+        let splice = leader_splice_position(elapsed, leader_duration, f64::from(head_distance));
         for (start, end) in [
             (
                 (left_tangent_x, left_center.1),
@@ -1989,7 +1989,12 @@ fn draw_tape_reels(
         ] {
             let steps = (end.0 - start.0).abs().max((end.1 - start.1).abs()) as usize;
             for step in 0..=steps {
-                if ((distance + step) % 12 + 12 - movement) % 12 < 2 {
+                if (distance + step) as f64 > splice {
+                    canvas.set_draw_color(if ((distance + step) % 12 + 12 - movement) % 12 < 2 {
+                        Color::RGB(250, 252, 244)
+                    } else {
+                        Color::RGB(196, 204, 196)
+                    });
                     let fraction = step as f64 / steps.max(1) as f64;
                     canvas.draw_point((
                         start.0 + (f64::from(end.0 - start.0) * fraction).round() as i32,
@@ -1998,6 +2003,21 @@ fn draw_tape_reels(
                 }
             }
             distance += steps + 1;
+        }
+        let coil_steps = (std::f64::consts::TAU * right_pack_r).ceil() as usize;
+        if splice < (distance + coil_steps) as f64 {
+            for step in 0..coil_steps {
+                let angle = step as f64 / coil_steps as f64 * std::f64::consts::TAU;
+                canvas.set_draw_color(if (distance + step) as f64 > splice {
+                    Color::RGB(196, 204, 196)
+                } else {
+                    tape_pack_color
+                });
+                canvas.draw_point((
+                    right_center.0 + ((right_pack_r + 0.5) * angle.cos()).round() as i32,
+                    right_center.1 + ((right_pack_r + 0.5) * angle.sin()).round() as i32,
+                ))?;
+            }
         }
     }
     canvas.set_blend_mode(BlendMode::None);
@@ -2023,6 +2043,10 @@ fn draw_tape_reels(
     draw_reel_hub(canvas, right_center.0, right_center.1, -right_angle, CREAM)?;
 
     Ok(())
+}
+
+fn leader_splice_position(elapsed: Duration, leader_duration: Duration, head_distance: f64) -> f64 {
+    head_distance + (elapsed.as_secs_f64() - leader_duration.as_secs_f64()) * (1000.0 / 70.0)
 }
 
 fn draw_roller_guide(
@@ -2919,7 +2943,7 @@ mod tests {
         for (phase, elapsed) in [
             ("LEADER GAP 10S - Q CANCEL", 0),
             ("LEADER GAP 10S - Q CANCEL", 70),
-            ("RECORDING 1/1", 140),
+            ("RECORDING 1/1", 14000),
         ] {
             ui.render_recording(
                 &mut canvas,

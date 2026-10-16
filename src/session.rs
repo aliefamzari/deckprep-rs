@@ -252,7 +252,7 @@ impl PrepSession {
                     self.total_seconds,
                     self.counter.calculate(0.0),
                     (0, 0),
-                    Duration::ZERO,
+                    deadline.saturating_duration_since(Instant::now()),
                     false,
                     None,
                 )

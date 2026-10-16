@@ -56,6 +56,7 @@ The four intended stages are implemented:
 
 Additional workflow features:
 
+- Prep countdown status blinks red every 350 ms; leader-gap, recording, track-gap, and completion statuses retain their normal styling.
 - Recording displays the live local system date/time (YYYY-MM-DD HH:MM:SS) below the SESSION header, alongside the bounded phase status.
 - A centered LOADING RECORDING popup is presented before recording-session audio and meter preparation, and disappears when the countdown begins or an error returns to the main screen.
 - Recording uses an equal-width 50:50 layout with a centered gutter. Session and Now Playing bars each show TOTAL TIME above, elapsed time inside-left, and remaining time inside-right, with no duplicate time readouts. Cassette animation sits above stereo meters on the right; a five-row scrolling session list occupies the lower right.

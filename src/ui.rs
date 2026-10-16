@@ -1618,7 +1618,9 @@ impl AppUi {
             DIM,
         )?;
 
-        text(canvas, 14, 43, &auto_scroll_text(phase, 27), 1, AMBER)?;
+        if let Some(color) = recording_phase_color(phase, marquee_elapsed) {
+            text(canvas, 14, 43, &auto_scroll_text(phase, 27), 1, color)?;
+        }
         let clock = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         text(canvas, 188, 43, &clock, 1, CREAM)?;
         let total = total_seconds.max(1);
@@ -2251,6 +2253,18 @@ fn draw_reel_hub(
     Ok(())
 }
 
+fn recording_phase_color(phase: &str, elapsed: Duration) -> Option<Color> {
+    if phase.starts_with("PREP ") && phase != "PREP COMPLETE" {
+        if (elapsed.as_millis() / 350) % 2 == 0 {
+            Some(RED)
+        } else {
+            None
+        }
+    } else {
+        Some(AMBER)
+    }
+}
+
 fn recording_progress_bar(
     canvas: &mut Canvas<Window>,
     x: i32,
@@ -2696,6 +2710,33 @@ mod tests {
     }
 
     #[test]
+    fn prep_countdown_blinks_red_without_affecting_other_phases() {
+        assert_eq!(
+            recording_phase_color("PREP 10S - Q CANCEL", Duration::ZERO),
+            Some(RED)
+        );
+        assert_eq!(
+            recording_phase_color("PREP 10S - Q CANCEL", Duration::from_millis(350)),
+            None
+        );
+        assert_eq!(
+            recording_phase_color("PREP 09S - Q CANCEL", Duration::from_millis(700)),
+            Some(RED)
+        );
+        for phase in [
+            "PREP COMPLETE",
+            "LEADER GAP 05S - Q CANCEL",
+            "RECORDING 1/5",
+            "TRACK GAP 05S - Q CANCEL",
+        ] {
+            assert_eq!(
+                recording_phase_color(phase, Duration::from_millis(350)),
+                Some(AMBER)
+            );
+        }
+    }
+
+    #[test]
     fn test_tone_status_stays_visible_past_notification_timeout() {
         let mut ui = AppUi::new(tracks(1), None);
         let path = std::path::Path::new("tones/tone_400hz.wav");
@@ -2837,6 +2878,45 @@ mod tests {
         let mut canvas = window.into_canvas().software().build().unwrap();
         let mut profile = RuntimeProfile::default();
         profile.name = "Nakamichi DR-1".to_owned();
+        for (animation_time, visible) in
+            [(Duration::ZERO, true), (Duration::from_millis(350), false)]
+        {
+            let ui = AppUi::new(Vec::new(), None);
+            ui.render_recording(
+                &mut canvas,
+                &profile,
+                "PREP 10S - Q CANCEL",
+                &[],
+                None,
+                0,
+                1800,
+                0,
+                (0, 0),
+                animation_time,
+                false,
+                None,
+            )
+            .unwrap();
+            let pixels = canvas
+                .read_pixels(
+                    Rect::new(14, 43, 162, 7),
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap();
+            assert_eq!(
+                pixels
+                    .chunks_exact(3)
+                    .any(|pixel| pixel == [RED.r, RED.g, RED.b]),
+                visible
+            );
+            if !visible {
+                assert!(
+                    pixels
+                        .chunks_exact(3)
+                        .all(|pixel| pixel == [BACKGROUND.r, BACKGROUND.g, BACKGROUND.b])
+                );
+            }
+        }
         let loading_ui = AppUi::new(Vec::new(), None);
         loading_ui
             .render_recording_loading(&mut canvas, &profile)

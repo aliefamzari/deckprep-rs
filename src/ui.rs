@@ -2999,7 +2999,7 @@ mod tests {
                     if character != '0' {
                         continue;
                     }
-                    for (offset_x, offset_y) in [(1, 1), (2, 2), (3, 4)] {
+                    for (offset_x, offset_y) in [(1, 1), (2, 2), (2, 3), (3, 4)] {
                         let pixel_x = x + index as i32 * 6 + offset_x;
                         let background = if pixel_x < 15 + filled as i32 {
                             RECORDING_PROGRESS
@@ -3019,6 +3019,28 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+        for elapsed in (0..=100).chain([50, 0]) {
+            recording_progress_bar(&mut canvas, 14, 125, elapsed, 100, 140).unwrap();
+            let fill_end = 15 + (u64::from(elapsed) * 138 / 100) as i32;
+            for x in [20, 122] {
+                let expected = if x < fill_end {
+                    RECORDING_PROGRESS
+                } else {
+                    PANEL
+                };
+                let pixel = canvas
+                    .read_pixels(
+                        Rect::new(x, 133, 1, 1),
+                        sdl2::pixels::PixelFormatEnum::RGB24,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    pixel,
+                    vec![expected.r, expected.g, expected.b],
+                    "inactive digit pixel must follow the moving fill at {elapsed}%"
+                );
             }
         }
         let names: Vec<String> = (0..12)
@@ -3685,7 +3707,8 @@ fn text_with_backing(
         for (row, bits) in rows.iter().enumerate() {
             for column in 0..5 {
                 let lit = bits & (1 << (4 - column)) != 0;
-                let inactive = segmented && time_digit('8')[row] & (1 << (4 - column)) != 0;
+                let inactive =
+                    segmented && digit_backing && time_digit('8')[row] & (1 << (4 - column)) != 0;
                 if lit || inactive {
                     fill(
                         canvas,

@@ -56,6 +56,7 @@ The four intended stages are implemented:
 
 Additional workflow features:
 
+- Date/time readouts use connected block-style digits with unchanged separators for readability; progress-bar labels remain transparent over the live fill.
 - White leader tape and brown magnetic tape meet at a moving splice: it crosses the head as the leader gap ends, continues along the take-up path after audio starts, and gradually winds around the take-up reel without an abrupt phase-based color switch.
 - Prep countdown status blinks red every 350 ms; leader-gap, recording, track-gap, and completion statuses retain their normal styling.
 - Recording displays the live local system date/time (YYYY-MM-DD HH:MM:SS) below the SESSION header, alongside the bounded phase status.

@@ -3647,6 +3647,26 @@ mod tests {
     }
 
     #[test]
+    fn time_digits_are_block_style_with_unchanged_separators() {
+        for digit in '0'..='9' {
+            let rows = time_digit(digit);
+            assert!(rows.iter().all(|row| *row > 0 && *row <= 31));
+            for other in '0'..digit {
+                assert_ne!(rows, time_digit(other));
+            }
+        }
+        for separator in [':', '-', '/', ' '] {
+            assert_eq!(time_digit(separator), glyph(separator));
+        }
+        for (index, character) in "2026-10-16 12:34:56".char_indices() {
+            assert_eq!(
+                time_digit_at("2026-10-16 12:34:56", index),
+                character.is_ascii_digit()
+            );
+        }
+    }
+
+    #[test]
     fn glyph_supports_lowercase_and_path_symbols() {
         for c in 'a'..='z' {
             let bitmap = glyph(c);
@@ -3957,16 +3977,16 @@ fn time_digit_at(value: &str, index: usize) -> bool {
 
 fn time_digit(character: char) -> [u8; 7] {
     match character {
-        '0' => [14, 17, 17, 0, 17, 17, 14],
-        '1' => [0, 1, 1, 0, 1, 1, 0],
-        '2' => [14, 1, 1, 14, 16, 16, 14],
-        '3' => [14, 1, 1, 14, 1, 1, 14],
-        '4' => [0, 17, 17, 14, 1, 1, 0],
-        '5' => [14, 16, 16, 14, 1, 1, 14],
-        '6' => [14, 16, 16, 14, 17, 17, 14],
-        '7' => [14, 1, 1, 0, 1, 1, 0],
-        '8' => [14, 17, 17, 14, 17, 17, 14],
-        '9' => [14, 17, 17, 14, 1, 1, 14],
+        '0' => [31, 17, 17, 17, 17, 17, 31],
+        '1' => [12, 28, 12, 12, 12, 12, 31],
+        '2' => [31, 1, 1, 31, 16, 16, 31],
+        '3' => [31, 1, 1, 31, 1, 1, 31],
+        '4' => [17, 17, 17, 31, 1, 1, 1],
+        '5' => [31, 16, 16, 31, 1, 1, 31],
+        '6' => [31, 16, 16, 31, 17, 17, 31],
+        '7' => [31, 1, 1, 1, 1, 1, 1],
+        '8' => [31, 17, 17, 31, 17, 17, 31],
+        '9' => [31, 17, 17, 31, 1, 1, 31],
         _ => glyph(character),
     }
 }
@@ -4009,9 +4029,7 @@ fn text_with_backing(
         for (row, bits) in rows.iter().enumerate() {
             for column in 0..5 {
                 let lit = bits & (1 << (4 - column)) != 0;
-                let inactive =
-                    segmented && digit_backing && time_digit('8')[row] & (1 << (4 - column)) != 0;
-                if lit || inactive {
+                if lit {
                     fill(
                         canvas,
                         Rect::new(
@@ -4020,11 +4038,7 @@ fn text_with_backing(
                             scale,
                             scale,
                         ),
-                        if lit {
-                            color
-                        } else {
-                            Color::RGB(color.r / 8, color.g / 8, color.b / 8)
-                        },
+                        color,
                     )?;
                 }
             }

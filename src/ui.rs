@@ -1619,10 +1619,10 @@ impl AppUi {
         )?;
 
         if let Some(color) = recording_phase_color(phase, marquee_elapsed) {
-            text(canvas, 14, 43, &auto_scroll_text(phase, 27), 1, color)?;
+            text(canvas, 14, 43, &auto_scroll_text(phase, 48), 1, color)?;
         }
         let clock = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        text(canvas, 188, 43, &clock, 1, AMBER)?;
+        text(canvas, 121, 34, &clock, 1, AMBER)?;
         let total = total_seconds.max(1);
         let progress = elapsed_seconds.min(total);
 
@@ -3371,7 +3371,7 @@ mod tests {
                 track_progress,
             )
             .unwrap();
-            for area in [Rect::new(188, 43, 60, 7), Rect::new(254, 43, 48, 7)] {
+            for area in [Rect::new(121, 34, 60, 7), Rect::new(187, 34, 48, 7)] {
                 let pixels = canvas
                     .read_pixels(area, sdl2::pixels::PixelFormatEnum::RGB24)
                     .unwrap();
@@ -3382,7 +3382,7 @@ mod tests {
                     "recording system date/time is not visible"
                 );
             }
-            for area in [Rect::new(177, 43, 11, 7), Rect::new(302, 43, 8, 7)] {
+            for area in [Rect::new(110, 34, 11, 7), Rect::new(235, 34, 75, 7)] {
                 let pixels = canvas
                     .read_pixels(area, sdl2::pixels::PixelFormatEnum::RGB24)
                     .unwrap();

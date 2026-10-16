@@ -46,6 +46,7 @@ pub struct AppUi {
     library_error: Option<String>,
     selected_panel: bool,
     queue_view: bool,
+    queue_name: Option<String>,
 }
 
 pub struct ProfileEditor {
@@ -1100,6 +1101,7 @@ impl AppUi {
             library_error,
             selected_panel: false,
             queue_view: false,
+            queue_name: None,
         }
     }
 
@@ -1123,6 +1125,7 @@ impl AppUi {
             Keycode::End => self.cursor = self.tracks.len() - 1,
             Keycode::Space => {
                 if self.selected[self.cursor] {
+                    self.queue_name = None;
                     self.capacity_warning_started = None;
                     self.selected[self.cursor] = false;
                     self.selection_order.retain(|index| *index != self.cursor);
@@ -1132,6 +1135,7 @@ impl AppUi {
                     candidate_tracks.push(track.clone());
                     let plan = SessionPlan::from_audio_tracks(profile, &candidate_tracks);
                     if plan.fits() {
+                        self.queue_name = None;
                         self.capacity_warning_started = None;
                         self.selected[self.cursor] = true;
                         self.selection_order.push(self.cursor);
@@ -1187,6 +1191,7 @@ impl AppUi {
     }
 
     pub fn reset_library(&mut self, tracks: Vec<AudioTrack>, error: Option<String>) {
+        self.queue_name = None;
         self.capacity_warning_started = None;
         self.tracks = tracks;
         self.cursor = 0;
@@ -1202,6 +1207,7 @@ impl AppUi {
     }
 
     pub fn clear_selection(&mut self) {
+        self.queue_name = None;
         self.capacity_warning_started = None;
         if self.selected.iter().any(|&is_selected| is_selected) {
             self.selected.fill(false);
@@ -1212,12 +1218,27 @@ impl AppUi {
     }
 
     pub fn load_selection(&mut self, saved_paths: &[std::path::PathBuf]) -> usize {
+        self.queue_name = None;
         self.capacity_warning_started = None;
         let (selected, order, missing) = match_tracks_ordered(&self.tracks, saved_paths);
         self.selected = selected;
         self.selection_order = order;
         self.selected_panel = self.selected.iter().any(|is_selected| *is_selected);
         missing
+    }
+
+    pub fn set_queue_path(&mut self, path: &std::path::Path) {
+        self.queue_name = path
+            .file_stem()
+            .map(|name| name.to_string_lossy().into_owned());
+    }
+
+    fn recording_session_label(&self, profile: &RuntimeProfile) -> String {
+        format!(
+            "[{}+{}]",
+            profile.name,
+            self.queue_name.as_deref().unwrap_or("Unsaved")
+        )
     }
 
     pub fn set_normalization_status(&mut self, status: impl Into<String>) {
@@ -1510,22 +1531,22 @@ impl AppUi {
         outline(canvas, Rect::new(6, 6, 308, 228), DIM)?;
         fill(canvas, Rect::new(9, 9, 302, 25), PANEL)?;
         text(canvas, 14, 13, "DECKPREP", 2, PHOSPHOR)?;
-        text(canvas, 121, 14, "DECK RECORDING MODE", 1, CREAM)?;
-        text(canvas, 121, 24, "PROFILE:", 1, AMBER)?;
+        text(canvas, 121, 14, "RECORDING MODE", 1, CREAM)?;
+        text(canvas, 121, 24, "SESSION:", 1, AMBER)?;
         text(
             canvas,
-            169,
+            175,
             24,
-            &auto_scroll_text(&profile.name, 9),
+            &auto_scroll_text(&self.recording_session_label(profile), 22),
             1,
             AMBER,
         )?;
-        text(canvas, 227, 24, "DAC:", 1, DIM)?;
+        text(canvas, 211, 14, "DAC:", 1, DIM)?;
         text(
             canvas,
-            251,
-            24,
-            &auto_scroll_text(&profile.audio_device, 9),
+            241,
+            14,
+            &auto_scroll_text(&profile.audio_device, 11),
             1,
             DIM,
         )?;
@@ -2378,6 +2399,51 @@ mod tests {
     #[test]
     fn short_variable_text_is_not_scrolled() {
         assert_eq!(scrolling_text("short", 8, Duration::from_secs(10)), "short");
+    }
+
+    #[test]
+    fn recording_header_combines_profile_and_queue_names() {
+        let mut profile = RuntimeProfile::default();
+        profile.name = "My Deck".to_owned();
+        let mut ui = AppUi::new(tracks(2), None);
+        assert_eq!(ui.recording_session_label(&profile), "[My Deck+Unsaved]");
+        ui.set_queue_path(std::path::Path::new("queues/Evening_Mix.json"));
+        assert_eq!(
+            ui.recording_session_label(&profile),
+            "[My Deck+Evening_Mix]"
+        );
+        ui.handle_key(Keycode::Down, &profile);
+        assert_eq!(
+            ui.recording_session_label(&profile),
+            "[My Deck+Evening_Mix]"
+        );
+        ui.set_queue_path(std::path::Path::new("queues/Evening_Mix_2.json"));
+        assert_eq!(
+            ui.recording_session_label(&profile),
+            "[My Deck+Evening_Mix_2]"
+        );
+    }
+
+    #[test]
+    fn changing_selection_or_library_clears_saved_queue_identity() {
+        let profile = RuntimeProfile::default();
+        let path = std::path::Path::new("queues/Mix.json");
+        let mut ui = AppUi::new(tracks(2), None);
+        ui.set_queue_path(path);
+        ui.handle_key(Keycode::Space, &profile);
+        assert!(ui.queue_name.is_none());
+        ui.set_queue_path(path);
+        ui.handle_key(Keycode::Space, &profile);
+        assert!(ui.queue_name.is_none());
+        ui.set_queue_path(path);
+        ui.clear_selection();
+        assert!(ui.queue_name.is_none());
+        ui.set_queue_path(path);
+        ui.load_selection(&[]);
+        assert!(ui.queue_name.is_none());
+        ui.set_queue_path(path);
+        ui.reset_library(tracks(1), None);
+        assert!(ui.queue_name.is_none());
     }
 
     #[test]

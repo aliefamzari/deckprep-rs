@@ -300,6 +300,7 @@ fn main() -> Result<(), String> {
                                     match load_queue(&path) {
                                         Ok(saved_paths) => {
                                             let missing = ui.load_selection(&saved_paths);
+                                            ui.set_queue_path(&path);
                                             let selected = ui.selected_tracks();
                                             let plan =
                                                 SessionPlan::from_audio_tracks(&profile, &selected);
@@ -337,12 +338,15 @@ fn main() -> Result<(), String> {
                                     &active_queue_editor.name,
                                     &selected,
                                 ) {
-                                    Ok(path) => ui.set_normalization_status(format!(
-                                        "QUEUE SAVED {}",
-                                        path.file_name()
-                                            .and_then(|name| name.to_str())
-                                            .unwrap_or("QUEUE.JSON")
-                                    )),
+                                    Ok(path) => {
+                                        ui.set_queue_path(&path);
+                                        ui.set_normalization_status(format!(
+                                            "QUEUE SAVED {}",
+                                            path.file_name()
+                                                .and_then(|name| name.to_str())
+                                                .unwrap_or("QUEUE.JSON")
+                                        ));
+                                    }
                                     Err(error) => ui.set_normalization_status(error),
                                 }
                             }

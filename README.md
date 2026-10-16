@@ -90,7 +90,10 @@ Review identifies original tracks as `ORIG` and normalized tracks as `NEW` or
 
 The tracks folder browser uses `Up`/`Down`, `Page Up`/`Page Down`, and `Home`/`End`
 to navigate folders, `Enter`/`Right` to open one, `Backspace`/`Left` to go to its
-parent, `Space` to use the current folder, and `Escape` to cancel. Missing paths
+parent, `Space` to use the current folder, and `Escape` to cancel.
+Hold `Up`/`Down`, `J`/`K`, or
+`Page Up`/`Page Down` to keep scrolling in folder, profile, and queue browsers;
+opening and selecting remain single-press actions. Missing paths
 start at their nearest existing parent. Audio files are loaded directly from the
 chosen folder, not recursively. In the profile editor, the chosen path remains
 unsaved until `Ctrl+S`, which also reloads the library. On the main page, press

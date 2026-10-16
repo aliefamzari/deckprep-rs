@@ -199,9 +199,15 @@ fn main() -> Result<(), String> {
                 Event::KeyDown {
                     keycode: Some(key),
                     keymod,
-                    repeat: false,
+                    repeat,
                     ..
-                } => {
+                } if !repeat
+                    || (legend.is_none()
+                        && (track_folder_browser.is_some()
+                            || profile_browser.is_some()
+                            || queue_browser.is_some())
+                        && is_browser_scroll_key(key)) =>
+                {
                     if let Some(session) = prep_session.as_mut() {
                         if key == Keycode::Return && session.is_complete() {
                             prep_session = None;
@@ -757,6 +763,20 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
+fn is_browser_scroll_key(key: Keycode) -> bool {
+    matches!(
+        key,
+        Keycode::Up
+            | Keycode::Down
+            | Keycode::J
+            | Keycode::K
+            | Keycode::PageUp
+            | Keycode::PageDown
+            | Keycode::Home
+            | Keycode::End
+    )
+}
+
 fn leave_review(
     review: &mut Option<NormalizationReview>,
     player: &mut AudioPlayer,
@@ -878,6 +898,35 @@ fn play_test_tone_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_repeat_only_accepts_list_navigation() {
+        for key in [
+            Keycode::Up,
+            Keycode::Down,
+            Keycode::J,
+            Keycode::K,
+            Keycode::PageUp,
+            Keycode::PageDown,
+            Keycode::Home,
+            Keycode::End,
+        ] {
+            assert!(is_browser_scroll_key(key));
+        }
+        for key in [
+            Keycode::Return,
+            Keycode::Space,
+            Keycode::Left,
+            Keycode::Right,
+            Keycode::Backspace,
+            Keycode::Escape,
+            Keycode::Q,
+            Keycode::W,
+            Keycode::F2,
+        ] {
+            assert!(!is_browser_scroll_key(key));
+        }
+    }
 
     #[test]
     fn leaving_review_stops_preview_and_clears_view_and_meter() {

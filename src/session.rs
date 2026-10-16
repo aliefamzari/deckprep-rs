@@ -254,6 +254,7 @@ impl PrepSession {
                     (0, 0),
                     Duration::ZERO,
                     false,
+                    None,
                 )
             }
             PrepPhase::LeaderGap {
@@ -274,6 +275,7 @@ impl PrepSession {
                     (0, 0),
                     elapsed,
                     true,
+                    None,
                 )
             }
             PrepPhase::RecordingTrack {
@@ -298,6 +300,12 @@ impl PrepSession {
                     meter_levels,
                     elapsed,
                     true,
+                    self.normalized.get(track_index).map(|track| {
+                        (
+                            player.position_seconds().max(0.0) as u32,
+                            track.source.duration_seconds,
+                        )
+                    }),
                 )
             }
             PrepPhase::TrackGap {
@@ -319,6 +327,7 @@ impl PrepSession {
                     (0, 0),
                     elapsed,
                     true,
+                    None,
                 )
             }
             PrepPhase::Complete { session_start } => ui.render_recording(
@@ -333,6 +342,7 @@ impl PrepSession {
                 (0, 0),
                 session_start.elapsed(),
                 false,
+                None,
             ),
         }
     }

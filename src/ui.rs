@@ -1573,6 +1573,7 @@ impl AppUi {
         meter_levels: (usize, usize),
         marquee_elapsed: Duration,
         counter_running: bool,
+        track_progress: Option<(u32, u32)>,
     ) -> Result<(), String> {
         canvas.set_draw_color(BACKGROUND);
         canvas.clear();
@@ -1608,7 +1609,7 @@ impl AppUi {
         draw_counter(canvas, 22, 70, counter)?;
         draw_tape_reels(
             canvas,
-            184,
+            205,
             55,
             marquee_elapsed,
             counter_running,
@@ -1621,44 +1622,74 @@ impl AppUi {
             14,
             112,
             &format!(
-                "TIME {:02}:{:02} / {:02}:{:02}",
+                "TIME {:02}:{:02}/{:02}:{:02}/{:02}:{:02}",
                 progress / 60,
                 progress % 60,
                 total / 60,
-                total % 60
+                total % 60,
+                remaining / 60,
+                remaining % 60
             ),
             1,
             CREAM,
         )?;
-        text(
-            canvas,
-            205,
-            112,
-            &format!("LEFT {:02}:{:02}", remaining / 60, remaining % 60),
-            1,
-            AMBER,
-        )?;
-        progress_bar(canvas, 14, 124, progress, total, 292)?;
+        progress_bar(canvas, 14, 126, progress, total, 164)?;
 
         let current_label = current_track
             .and_then(|index| track_names.get(index))
-            .map(|name| scrolling_text(name, 45, marquee_elapsed))
+            .map(|name| scrolling_text(name, 27, marquee_elapsed))
             .unwrap_or_else(|| "STANDBY".to_owned());
-        text(canvas, 14, 137, "NOW PLAYING", 1, AMBER)?;
-        text(canvas, 14, 148, &current_label, 1, PHOSPHOR)?;
+        text(canvas, 14, 146, "NOW PLAYING", 1, AMBER)?;
+        text(canvas, 14, 158, &current_label, 1, PHOSPHOR)?;
+        let (track_elapsed, track_total) = track_progress.unwrap_or((0, 0));
+        let track_elapsed = track_elapsed.min(track_total);
+        text(
+            canvas,
+            14,
+            177,
+            &format!(
+                "{:02}:{:02} / {:02}:{:02}",
+                track_elapsed / 60,
+                track_elapsed % 60,
+                track_total / 60,
+                track_total % 60
+            ),
+            1,
+            CREAM,
+        )?;
+        progress_bar(canvas, 14, 190, track_elapsed, track_total.max(1), 164)?;
+        let track_remaining = track_total.saturating_sub(track_elapsed);
+        text(
+            canvas,
+            14,
+            208,
+            &format!(
+                "LEFT {:02}:{:02}",
+                track_remaining / 60,
+                track_remaining % 60
+            ),
+            1,
+            DIM,
+        )?;
 
-        fill(canvas, Rect::new(9, 163, 302, 68), PANEL)?;
-        text(canvas, 14, 166, "SESSION TRACKS", 1, AMBER)?;
-        text(canvas, 194, 166, "OUTPUT", 1, AMBER)?;
+        text(canvas, 194, 115, "OUTPUT", 1, AMBER)?;
+        text(canvas, 194, 127, "L", 1, DIM)?;
+        meter(canvas, 205, 126, meter_levels.0)?;
+        text(canvas, 194, 139, "R", 1, DIM)?;
+        meter(canvas, 205, 138, meter_levels.1)?;
+        text(canvas, 205, 150, "-40  -20  -6   0", 1, DIM)?;
+
+        fill(canvas, Rect::new(187, 163, 124, 68), PANEL)?;
+        text(canvas, 194, 166, "SESSION TRACKS", 1, AMBER)?;
         let queue_start = current_track
             .unwrap_or(0)
             .saturating_sub(2)
-            .min(track_names.len().saturating_sub(6));
+            .min(track_names.len().saturating_sub(5));
         for (row, (index, name)) in track_names
             .iter()
             .enumerate()
             .skip(queue_start)
-            .take(6)
+            .take(5)
             .enumerate()
         {
             let color = if current_track == Some(index) {
@@ -1667,28 +1698,23 @@ impl AppUi {
                 CREAM
             };
             let display_name =
-                track_name_text(name, 23, current_track == Some(index), marquee_elapsed);
+                track_name_text(name, 15, current_track == Some(index), marquee_elapsed);
             if current_track == Some(index) {
                 fill(
                     canvas,
-                    Rect::new(12, 174 + row as i32 * 9, 164, 9),
+                    Rect::new(191, 177 + row as i32 * 10, 116, 10),
                     Color::RGB(42, 48, 43),
                 )?;
             }
             text(
                 canvas,
-                16,
-                175 + row as i32 * 9,
+                194,
+                178 + row as i32 * 10,
                 &format!("{:02} {}", index + 1, display_name),
                 1,
                 color,
             )?;
         }
-        text(canvas, 194, 175, "L", 1, DIM)?;
-        meter(canvas, 205, 174, meter_levels.0)?;
-        text(canvas, 194, 187, "R", 1, DIM)?;
-        meter(canvas, 205, 186, meter_levels.1)?;
-        text(canvas, 205, 197, "-40  -20  -6   0", 1, DIM)?;
         Ok(())
     }
 }
@@ -2784,6 +2810,96 @@ mod tests {
         ui.set_test_tone_preview(next_path, TestTone::Hz1000);
         ui.sync_test_tone_preview(Some(next_path), false);
         assert_eq!(ui.current_status(), Some("PLAYING TEST TONE 1kHz (Ref)"));
+    }
+
+    #[test]
+    #[ignore = "requires SDL video; run with SDL_VIDEODRIVER=dummy"]
+    fn recording_layout_separates_session_track_progress_meters_and_queue() {
+        let sdl = sdl2::init().unwrap();
+        let video = sdl.video().unwrap();
+        let window = video
+            .window("recording regression", 320, 240)
+            .hidden()
+            .build()
+            .unwrap();
+        let mut canvas = window.into_canvas().software().build().unwrap();
+        let mut profile = RuntimeProfile::default();
+        profile.name = "Nakamichi DR-1".to_owned();
+        let names: Vec<String> = (0..12)
+            .map(|index| format!("Track {:02} - A long recording title.flac", index + 1))
+            .collect();
+        let mut ui = AppUi::new(Vec::new(), None);
+        ui.set_queue_path(std::path::Path::new("queues/Evening_Mix.json"));
+        for (current, elapsed, track_progress) in [
+            (None, 0, None),
+            (Some(6), 900, Some((90, 180))),
+            (None, 903, None),
+            (None, 1800, None),
+        ] {
+            ui.render_recording(
+                &mut canvas,
+                &profile,
+                "RECORDING 7/12",
+                &names,
+                current,
+                elapsed,
+                1800,
+                1234,
+                if current.is_some() { (8, 8) } else { (0, 0) },
+                Duration::from_secs(3),
+                current.is_some(),
+                track_progress,
+            )
+            .unwrap();
+            if current.is_some() {
+                for (x, y) in [(20, 128), (20, 192), (206, 127), (206, 139)] {
+                    assert_eq!(
+                        canvas
+                            .read_pixels(
+                                Rect::new(x, y, 1, 1),
+                                sdl2::pixels::PixelFormatEnum::RGB24
+                            )
+                            .unwrap(),
+                        vec![PHOSPHOR.r, PHOSPHOR.g, PHOSPHOR.b]
+                    );
+                }
+                for (x, y) in [(180, 128), (180, 192)] {
+                    assert_eq!(
+                        canvas
+                            .read_pixels(
+                                Rect::new(x, y, 1, 1),
+                                sdl2::pixels::PixelFormatEnum::RGB24
+                            )
+                            .unwrap(),
+                        vec![BACKGROUND.r, BACKGROUND.g, BACKGROUND.b]
+                    );
+                }
+                assert_eq!(
+                    canvas
+                        .read_pixels(
+                            Rect::new(192, 198, 1, 1),
+                            sdl2::pixels::PixelFormatEnum::RGB24
+                        )
+                        .unwrap(),
+                    vec![42, 48, 43]
+                );
+                if let Ok(path) = std::env::var("DECKPREP_RECORDING_SCREENSHOT") {
+                    let mut pixels = canvas
+                        .read_pixels(None, sdl2::pixels::PixelFormatEnum::RGB24)
+                        .unwrap();
+                    sdl2::surface::Surface::from_data(
+                        &mut pixels,
+                        320,
+                        240,
+                        960,
+                        sdl2::pixels::PixelFormatEnum::RGB24,
+                    )
+                    .unwrap()
+                    .save_bmp(path)
+                    .unwrap();
+                }
+            }
+        }
     }
 
     fn folder_browser_fixture() -> PathBuf {

@@ -583,7 +583,8 @@ pub fn render_legend(canvas: &mut Canvas<Window>, context: LegendContext) -> Res
     let lines: &[(&str, &str)] = match context {
         LegendContext::Main => &[
             ("UP/DOWN", "MOVE TRACK"),
-            ("SPACE", "SELECT"),
+            ("LEFT/RIGHT", "ADD / REMOVE"),
+            ("SPACE", "TOGGLE SELECT"),
             ("C", "CLEAR SELECTION"),
             ("1-5", "CALIBRATION TONES"),
             ("P", "PREVIEW"),
@@ -1134,28 +1135,9 @@ impl AppUi {
             }
             Keycode::Home => self.cursor = 0,
             Keycode::End => self.cursor = self.tracks.len() - 1,
-            Keycode::Space => {
-                if self.selected[self.cursor] {
-                    self.queue_name = None;
-                    self.capacity_warning_started = None;
-                    self.selected[self.cursor] = false;
-                    self.selection_order.retain(|index| *index != self.cursor);
-                    self.selected_panel = self.selected.iter().any(|is_selected| *is_selected);
-                } else if let Some(track) = self.tracks.get(self.cursor) {
-                    let mut candidate_tracks = self.selected_tracks();
-                    candidate_tracks.push(track.clone());
-                    let plan = SessionPlan::from_audio_tracks(profile, &candidate_tracks);
-                    if plan.fits() {
-                        self.queue_name = None;
-                        self.capacity_warning_started = None;
-                        self.selected[self.cursor] = true;
-                        self.selection_order.push(self.cursor);
-                        self.selected_panel = true;
-                    } else {
-                        self.capacity_warning_started = Some(Instant::now());
-                    }
-                }
-            }
+            Keycode::Left => self.set_current_track_selected(true, profile),
+            Keycode::Right => self.set_current_track_selected(false, profile),
+            Keycode::Space => self.set_current_track_selected(!self.selected[self.cursor], profile),
             Keycode::C => {
                 self.clear_selection();
             }
@@ -1170,6 +1152,32 @@ impl AppUi {
             self.focus_changed_at = Instant::now();
             self.keep_cursor_visible();
         }
+    }
+
+    fn set_current_track_selected(&mut self, selected: bool, profile: &RuntimeProfile) {
+        if self.selected[self.cursor] == selected {
+            return;
+        }
+        if selected {
+            let Some(track) = self.tracks.get(self.cursor).cloned() else {
+                return;
+            };
+            let mut candidate_tracks = self.selected_tracks();
+            candidate_tracks.push(track);
+            if !SessionPlan::from_audio_tracks(profile, &candidate_tracks).fits() {
+                self.capacity_warning_started = Some(Instant::now());
+                return;
+            }
+            self.selected[self.cursor] = true;
+            self.selection_order.push(self.cursor);
+            self.selected_panel = true;
+        } else {
+            self.selected[self.cursor] = false;
+            self.selection_order.retain(|index| *index != self.cursor);
+            self.selected_panel = self.selected.iter().any(|is_selected| *is_selected);
+        }
+        self.queue_name = None;
+        self.capacity_warning_started = None;
     }
 
     pub fn current_track(&self) -> Option<&AudioTrack> {
@@ -1390,7 +1398,7 @@ impl AppUi {
 
         fill(canvas, Rect::new(9, 211, 302, 20), PANEL)?;
         tiny_text(canvas, 18, 218, "NAV ^V", Color::RGB(72, 202, 220))?;
-        tiny_text(canvas, 60, 218, "SEL SPC", PHOSPHOR)?;
+        tiny_text(canvas, 60, 218, "L ADD R RMV", PHOSPHOR)?;
         tiny_text(canvas, 108, 218, "PLAY P", AMBER)?;
         tiny_text(canvas, 151, 218, "STOP X", RED)?;
         tiny_text(canvas, 195, 218, "QUEUE TAB", Color::RGB(92, 148, 224))?;
@@ -1767,6 +1775,7 @@ fn tiny_glyph(character: char) -> [u8; 5] {
         'A' => [2, 5, 7, 5, 5],
         'B' => [6, 5, 6, 5, 6],
         'C' => [3, 4, 4, 4, 3],
+        'D' => [6, 5, 5, 5, 6],
         'E' => [7, 4, 6, 4, 7],
         'H' => [5, 5, 7, 5, 5],
         'L' => [4, 4, 4, 4, 7],
@@ -2835,6 +2844,45 @@ mod tests {
     }
 
     #[test]
+    fn left_adds_and_right_removes_the_highlighted_track() {
+        let profile = RuntimeProfile::default();
+        let mut ui = AppUi::new(tracks(2), None);
+
+        ui.handle_key(Keycode::Left, &profile);
+        ui.handle_key(Keycode::Left, &profile);
+        assert_eq!(ui.selected_tracks().len(), 1);
+        assert!(ui.selected[0]);
+
+        ui.handle_key(Keycode::Down, &profile);
+        ui.handle_key(Keycode::Left, &profile);
+        assert_eq!(ui.selected_tracks().len(), 2);
+        ui.handle_key(Keycode::Right, &profile);
+        assert_eq!(ui.selected_tracks().len(), 1);
+        assert!(!ui.selected[1]);
+        assert!(ui.selected[0]);
+        ui.handle_key(Keycode::Right, &profile);
+        assert_eq!(ui.selected_tracks().len(), 1);
+    }
+
+    #[test]
+    fn left_add_respects_side_capacity_and_space_still_toggles() {
+        let mut profile = RuntimeProfile::default();
+        profile.side_duration_minutes = 1;
+        profile.leader_gap_seconds = 10;
+        let mut ui = AppUi::new(tracks(1), None);
+
+        ui.handle_key(Keycode::Left, &profile);
+        assert!(!ui.selected[0]);
+        assert!(ui.capacity_warning_started.is_some());
+
+        profile.side_duration_minutes = 30;
+        ui.handle_key(Keycode::Space, &profile);
+        assert!(ui.selected[0]);
+        ui.handle_key(Keycode::Space, &profile);
+        assert!(!ui.selected[0]);
+    }
+
+    #[test]
     fn capacity_warning_blinks_and_expires() {
         assert_eq!(capacity_warning_phase(None), None);
         assert_eq!(capacity_warning_phase(Some(Duration::ZERO)), Some(true));
@@ -3839,6 +3887,7 @@ mod tests {
 
     #[test]
     fn unicode_glyphs_cover_latin_greek_hiragana_and_symbols() {
+        assert_eq!(tiny_glyph('D'), [6, 5, 5, 5, 6]);
         assert!(unicode_bitmap('한').is_none());
         assert!(unifont::get_glyph('한').unwrap().is_fullwidth());
         assert!(unifont_glyph('한').unwrap().iter().any(|row| *row != 0));

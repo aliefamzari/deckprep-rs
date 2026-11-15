@@ -19,7 +19,7 @@ The original Python implementation remains the behavioral reference in the sibli
 - Fixed 320x240 logical SDL2 canvas with integer scaling.
 - Desktop development profile for WSL2/WSLg.
 - Keyboard track navigation with Up/Down, J/K, Page Up/Down, Home, and End.
-- Track selection and deselection with Space, and clear selection with C.
+- Main-screen Left adds the highlighted track, Right removes it, Space toggles selection, and C clears the selection.
 - Over-capacity selections are rejected without popup text; MAX timing blinks in a red box for three seconds in the main selected panel and queue workspace.
 - Dynamic seven-row track viewport with auto-scroll and scrollbar.
 - Consolidated header displaying active profile and DAC device, eliminating redundant resolution text and sub-bar to maximize vertical screen space for tracks and meters.

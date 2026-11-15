@@ -1786,8 +1786,45 @@ fn unicode_bitmap(character: char) -> Option<[u8; 8]> {
         .or_else(|| font8x8::SGA_FONTS.get(character))
 }
 
+fn unifont_glyph(character: char) -> Option<[u8; 8]> {
+    let glyph = unifont::get_glyph(character)?;
+    Some(std::array::from_fn(|row| {
+        (0..8).fold(0, |pixels, column| {
+            let source_width = if glyph.is_fullwidth() { 2 } else { 1 };
+            let ink = (0..2).any(|y| {
+                (0..source_width).any(|x| {
+                    let source_x = if glyph.is_fullwidth() {
+                        column * 2 + x
+                    } else {
+                        column
+                    };
+                    glyph.get_pixel(source_x, row * 2 + y)
+                })
+            });
+            if ink {
+                pixels | (1 << (7 - column))
+            } else {
+                pixels
+            }
+        })
+    }))
+}
+
 fn unicode_glyph(character: char) -> Option<[u8; 7]> {
-    let bitmap = unicode_bitmap(character)?;
+    let Some(bitmap) = unicode_bitmap(character) else {
+        let fullwidth = unifont_glyph(character)?;
+        return Some(std::array::from_fn(|row| {
+            let source_y = (row * 2 + 1) * 8 / 14;
+            (0..5).fold(0, |pixels, column| {
+                let source_x = (column * 2 + 1) * 8 / 10;
+                if fullwidth[source_y] & (1 << (7 - source_x)) != 0 {
+                    pixels | (1 << (4 - column))
+                } else {
+                    pixels
+                }
+            })
+        }));
+    };
     Some(std::array::from_fn(|row| {
         let source_y = (row * 2 + 1) * 8 / 14;
         (0..5).fold(0, |pixels, column| {
@@ -1802,7 +1839,8 @@ fn unicode_glyph(character: char) -> Option<[u8; 7]> {
 }
 
 fn unicode_tiny_glyph(character: char) -> Option<[u8; 5]> {
-    let bitmap = unicode_bitmap(character)?;
+    let bitmap = unicode_bitmap(character)
+        .or_else(|| unifont_glyph(character).map(|rows| rows.map(|row| row.reverse_bits())))?;
     Some(std::array::from_fn(|row| {
         let source_y = (row * 2 + 1) * 8 / 10;
         (0..3).fold(0, |pixels, column| {
@@ -3361,7 +3399,8 @@ mod tests {
                         assert_eq!(
                             pixel,
                             vec![background.r, background.g, background.b],
-                            "zero interior must preserve the bar fill at {elapsed}/{total}"
+                            "zero interior must preserve the bar fill at {elapsed}/{total}, label {label}, pixel ({pixel_x}, {})",
+                            130 + offset_y
                         );
                     }
                 }
@@ -3692,6 +3731,11 @@ mod tests {
 
     #[test]
     fn time_digits_are_block_style_with_unchanged_separators() {
+        assert!(
+            (0..5)
+                .filter(|index| *index != 2)
+                .all(|index| time_digit_at("00:00", index))
+        );
         for digit in '0'..='9' {
             let rows = time_digit(digit);
             assert!(rows.iter().all(|row| *row > 0 && *row <= 31));
@@ -3724,7 +3768,10 @@ mod tests {
 
     #[test]
     fn unicode_glyphs_cover_latin_greek_hiragana_and_symbols() {
-        for character in ['é', 'ñ', 'Ω', 'あ', '╬', '█'] {
+        assert!(unicode_bitmap('한').is_none());
+        assert!(unifont::get_glyph('한').unwrap().is_fullwidth());
+        assert!(unifont_glyph('한').unwrap().iter().any(|row| *row != 0));
+        for character in ['é', 'ñ', 'Ω', 'あ', '╬', '█', '한', '글'] {
             let glyph = glyph(character);
             assert!(
                 glyph.iter().any(|row| *row != 0),
@@ -3737,8 +3784,8 @@ mod tests {
             );
         }
         assert_eq!(glyph('A'), [14, 17, 17, 31, 17, 17, 17]);
-        assert_eq!(glyph('🦊'), glyph('?'));
-        assert_eq!(tiny_glyph('🦊'), tiny_glyph('?'));
+        assert_eq!(glyph('\u{10FFFF}'), glyph('?'));
+        assert_eq!(tiny_glyph('\u{10FFFF}'), tiny_glyph('?'));
     }
 
     #[test]
@@ -3754,8 +3801,8 @@ mod tests {
         let mut canvas = window.into_canvas().software().build().unwrap();
         canvas.set_draw_color(BACKGROUND);
         canvas.clear();
-        text(&mut canvas, 1, 0, "Café Ω あ ╬ █ 🦊", 1, CREAM).unwrap();
-        tiny_text(&mut canvas, 1, 10, "éΩあ╬█🦊", PHOSPHOR).unwrap();
+        text(&mut canvas, 1, 0, "Café Ω あ ╬ █ 한국어 🦊", 1, CREAM).unwrap();
+        tiny_text(&mut canvas, 1, 10, "éΩあ╬█한국어🦊", PHOSPHOR).unwrap();
         let pixels = canvas
             .read_pixels(None, sdl2::pixels::PixelFormatEnum::RGB24)
             .unwrap();
@@ -3769,6 +3816,38 @@ mod tests {
                 .chunks_exact(3)
                 .any(|pixel| pixel == [PHOSPHOR.r, PHOSPHOR.g, PHOSPHOR.b])
         );
+        if let Ok(path) = std::env::var("DECKPREP_UNICODE_SCREENSHOT") {
+            let mut image = canvas
+                .read_pixels(None, sdl2::pixels::PixelFormatEnum::RGB24)
+                .unwrap();
+            sdl2::surface::Surface::from_data(
+                &mut image,
+                160,
+                32,
+                480,
+                sdl2::pixels::PixelFormatEnum::RGB24,
+            )
+            .unwrap()
+            .save_bmp(path)
+            .unwrap();
+        }
+        for character in ['한', '글', '어'] {
+            canvas.set_draw_color(BACKGROUND);
+            canvas.clear();
+            text(&mut canvas, 1, 0, &character.to_string(), 1, CREAM).unwrap();
+            let glyph_pixels = canvas
+                .read_pixels(
+                    Rect::new(0, 0, 16, 16),
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap();
+            assert!(
+                glyph_pixels
+                    .chunks_exact(3)
+                    .any(|pixel| pixel == [CREAM.r, CREAM.g, CREAM.b]),
+                "Korean glyph {character} rendered no pixels"
+            );
+        }
     }
 
     #[test]
@@ -4107,6 +4186,28 @@ fn text_with_backing(
     let mut cursor = x;
     for (index, character) in value.char_indices() {
         let segmented = time_digit_at(value, index);
+        if !character.is_ascii() && unicode_bitmap(character).is_none() {
+            if let Some(rows) = unifont_glyph(character) {
+                for (row, bits) in rows.iter().enumerate() {
+                    for column in 0..8 {
+                        if bits & (1 << (7 - column)) != 0 {
+                            fill(
+                                canvas,
+                                Rect::new(
+                                    cursor + column * scale as i32,
+                                    y + row as i32 * scale as i32,
+                                    scale,
+                                    scale,
+                                ),
+                                color,
+                            )?;
+                        }
+                    }
+                }
+                cursor += 9 * scale as i32;
+                continue;
+            }
+        }
         let rows = if segmented {
             time_digit(character)
         } else {

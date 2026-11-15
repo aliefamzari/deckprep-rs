@@ -100,6 +100,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "unifont",
 ]
 
 [[package]]
@@ -397,6 +398,12 @@ name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
+
+[[package]]
+name = "unifont"
+version = "1.1.0+data-15.1.05"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eb5abf597aaa6fff19801d6747672f56e618d60002e7191ea92773a5bcae156"
 
 [[package]]
 name = "version-compare"

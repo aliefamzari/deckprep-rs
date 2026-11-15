@@ -24,7 +24,7 @@ The original Python implementation remains the behavioral reference in the sibli
 - Dynamic seven-row track viewport with auto-scroll and scrollbar.
 - Consolidated header displaying active profile and DAC device, eliminating redundant resolution text and sub-bar to maximize vertical screen space for tracks and meters.
 - Long-title marquee for the highlighted track.
-- Unicode bitmap glyph fallback for extended Latin, Greek, Hiragana, box-drawing and block symbols in the main and compact text renderers; unsupported characters use a visible replacement glyph.
+- Unicode bitmap glyphs for extended Latin, Greek, Hiragana, Hangul, box-drawing and block symbols in the main and compact text renderers; fullwidth Hangul uses Unifont, and unsupported characters use a visible replacement glyph.
 - Dedicated track/queue workspace opened with Tab or V.
 - Queue workspace with library and selected queue columns, synchronized highlighting, fixed title/duration columns, capacity totals, and queue scrolling.
 - Contextual `?` legend popup for the main UI, review screen, and profile editor.

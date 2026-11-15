@@ -393,6 +393,7 @@ fn main() -> Result<(), String> {
                                     }
                                     preview_meter = Some(StereoMeter::analyze(&path)?);
                                     ui.set_track_preview(&path, &track.name);
+                                    ui.set_preview_duration(track.duration_seconds);
                                     ui.sync_test_tone_preview(
                                         player.current_path(),
                                         player.is_paused(),
@@ -553,6 +554,7 @@ fn main() -> Result<(), String> {
                                 }
                                 preview_meter = Some(StereoMeter::analyze(&path)?);
                                 ui.set_track_preview(&path, &track.name);
+                                ui.set_preview_duration(track.duration_seconds);
                                 ui.sync_test_tone_preview(
                                     player.current_path(),
                                     player.is_paused(),
@@ -761,6 +763,7 @@ fn main() -> Result<(), String> {
         }
 
         ui.sync_test_tone_preview(player.current_path(), player.is_paused());
+        ui.set_preview_position(player.position_seconds());
         if was_test_tone && ui.test_tone_status().is_none() {
             if let Some(active_review) = review.as_mut() {
                 active_review.preview_status.clear();

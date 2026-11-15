@@ -44,6 +44,8 @@ pub struct AppUi {
     status_updated_at: Option<Instant>,
     test_tone_preview: Option<(std::path::PathBuf, String)>,
     test_tone_status: Option<String>,
+    preview_duration_seconds: Option<u32>,
+    preview_position_seconds: f64,
     capacity_warning_started: Option<Instant>,
     prep_requested: bool,
     focus_changed_at: Instant,
@@ -1106,6 +1108,8 @@ impl AppUi {
             status_updated_at: None,
             test_tone_preview: None,
             test_tone_status: None,
+            preview_duration_seconds: None,
+            preview_position_seconds: 0.0,
             capacity_warning_started: None,
             prep_requested: false,
             focus_changed_at: Instant::now(),
@@ -1180,6 +1184,8 @@ impl AppUi {
         if !previewing {
             self.test_tone_preview = None;
             self.test_tone_status = None;
+            self.preview_duration_seconds = None;
+            self.preview_position_seconds = 0.0;
         }
         self.previewing = previewing;
         self.preview_paused = paused;
@@ -1187,11 +1193,20 @@ impl AppUi {
 
     pub fn set_test_tone_preview(&mut self, path: &std::path::Path, tone: TestTone) {
         self.set_track_preview(path, &format!("TEST TONE {}", tone.label()));
+        self.set_preview_duration(tone.duration_seconds());
     }
 
     pub fn set_track_preview(&mut self, path: &std::path::Path, name: &str) {
         self.test_tone_preview = Some((path.to_path_buf(), name.to_owned()));
         self.sync_test_tone_preview(Some(path), false);
+    }
+
+    pub fn set_preview_duration(&mut self, duration_seconds: u32) {
+        self.preview_duration_seconds = Some(duration_seconds);
+    }
+
+    pub fn set_preview_position(&mut self, position_seconds: f64) {
+        self.preview_position_seconds = position_seconds.max(0.0);
     }
 
     pub fn sync_test_tone_preview(&mut self, current_path: Option<&std::path::Path>, paused: bool) {
@@ -1205,6 +1220,8 @@ impl AppUi {
             } else {
                 self.test_tone_preview = None;
                 self.test_tone_status = None;
+                self.preview_duration_seconds = None;
+                self.preview_position_seconds = 0.0;
             }
         }
     }
@@ -1236,6 +1253,8 @@ impl AppUi {
     pub fn reset_library(&mut self, tracks: Vec<AudioTrack>, error: Option<String>) {
         self.test_tone_preview = None;
         self.test_tone_status = None;
+        self.preview_duration_seconds = None;
+        self.preview_position_seconds = 0.0;
         self.queue_name = None;
         self.capacity_warning_started = None;
         self.tracks = tracks;
@@ -1379,12 +1398,19 @@ impl AppUi {
                 capacity_warning,
             )?;
         } else {
+            let preview_progress = self.preview_duration_seconds.map(|duration| {
+                (
+                    (self.preview_position_seconds as u32).min(duration),
+                    duration,
+                )
+            });
             draw_deck_monitor(
                 canvas,
                 self.armed,
                 self.previewing,
                 self.preview_paused,
                 meter_levels,
+                preview_progress,
             )?;
         }
 
@@ -3156,7 +3182,9 @@ mod tests {
                 ui.set_test_tone_preview(std::path::Path::new("tone.wav"), TestTone::Hz400);
             } else {
                 ui.set_track_preview(std::path::Path::new("track.flac"), "Track.flac");
+                ui.set_preview_duration(120);
             }
+            ui.set_preview_position(42.0);
             ui.set_previewing(true, false);
             ui.render(&mut canvas, &profile, Some((8, 8))).unwrap();
             let meter_pixel = canvas
@@ -3166,6 +3194,20 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(meter_pixel, vec![PHOSPHOR.r, PHOSPHOR.g, PHOSPHOR.b]);
+            let progress_pixel = canvas
+                .read_pixels(
+                    Rect::new(200, 118, 1, 1),
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap();
+            assert_eq!(
+                progress_pixel,
+                vec![
+                    RECORDING_PROGRESS.r,
+                    RECORDING_PROGRESS.g,
+                    RECORDING_PROGRESS.b
+                ]
+            );
             assert_eq!(ui.queue_view, queue_view);
             assert!(ui.selected_panel);
             assert_eq!(ui.selected_tracks().len(), 1);
@@ -4137,6 +4179,7 @@ fn draw_deck_monitor(
     previewing: bool,
     preview_paused: bool,
     meter_levels: Option<(usize, usize)>,
+    preview_progress: Option<(u32, u32)>,
 ) -> Result<(), String> {
     fill(canvas, Rect::new(187, 37, 124, 170), PANEL)?;
     text(canvas, 194, 42, "OUTPUT LEVEL", 1, CREAM)?;
@@ -4148,18 +4191,22 @@ fn draw_deck_monitor(
     meter(canvas, 203, 71, meter_levels.map_or(0, |levels| levels.1))?;
     text(canvas, 203, 82, "-40  -20  -6   0", 1, DIM)?;
 
-    text(canvas, 194, 100, "TAPE DECK", 1, AMBER)?;
-    draw_cassette(canvas, 196, 114)?;
-    let (status, color) = if previewing && preview_paused {
-        ("PREVIEW PAUSE", AMBER)
-    } else if previewing {
-        ("PREVIEW PLAY", PHOSPHOR)
-    } else if armed {
-        ("READY TO PREP", AMBER)
+    if let Some((elapsed, total)) = preview_progress {
+        text(canvas, 194, 101, "TRACK PREVIEW", 1, AMBER)?;
+        recording_progress_bar(canvas, 194, 117, elapsed, total, 110)?;
     } else {
-        ("MONITOR IDLE", PHOSPHOR)
-    };
-    text(canvas, 211, 153, status, 1, color)?;
+        text(canvas, 194, 100, "TAPE DECK", 1, AMBER)?;
+        draw_cassette(canvas, 196, 114)?;
+        let (status, color) = if armed {
+            ("READY TO PREP", AMBER)
+        } else {
+            ("MONITOR IDLE", PHOSPHOR)
+        };
+        text(canvas, 211, 153, status, 1, color)?;
+        if previewing && preview_paused {
+            text(canvas, 211, 165, "PREVIEW PAUSE", 1, AMBER)?;
+        }
+    }
     Ok(())
 }
 

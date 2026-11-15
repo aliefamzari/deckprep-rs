@@ -1596,7 +1596,7 @@ impl AppUi {
         canvas.set_draw_color(BACKGROUND);
         canvas.clear();
         outline(canvas, Rect::new(6, 6, 308, 228), DIM)?;
-        fill(canvas, Rect::new(9, 9, 302, 25), PANEL)?;
+        fill(canvas, Rect::new(9, 9, 102, 25), PANEL)?;
         text(canvas, 14, 13, "DECKPREP", 2, PHOSPHOR)?;
         text(canvas, 121, 14, "RECORDING MODE", 1, CREAM)?;
         text(canvas, 121, 24, "SESSION:", 1, AMBER)?;
@@ -1643,7 +1643,7 @@ impl AppUi {
         text(
             canvas,
             14,
-            111,
+            109,
             &format!(
                 "TOTAL TIME: {:02}:{:02}",
                 total_seconds / 60,
@@ -1672,8 +1672,8 @@ impl AppUi {
             .and_then(|index| track_names.get(index))
             .map(|name| scrolling_text(name, 23, marquee_elapsed))
             .unwrap_or_else(|| "STANDBY".to_owned());
-        text(canvas, 14, 146, "NOW PLAYING", 1, AMBER)?;
-        text(canvas, 14, 158, &current_label, 1, PHOSPHOR)?;
+        text(canvas, 14, 150, "NOW PLAYING", 1, AMBER)?;
+        text(canvas, 14, 162, &current_label, 1, PHOSPHOR)?;
         let (track_elapsed, track_total) = track_progress.unwrap_or((0, 0));
         let track_elapsed = track_elapsed.min(track_total);
         text(
@@ -3338,6 +3338,20 @@ mod tests {
                 None,
             )
             .unwrap();
+            for (x, expected) in [
+                (10, PANEL),
+                (110, PANEL),
+                (111, BACKGROUND),
+                (120, BACKGROUND),
+            ] {
+                assert_eq!(
+                    canvas
+                        .read_pixels(Rect::new(x, 10, 1, 1), sdl2::pixels::PixelFormatEnum::RGB24)
+                        .unwrap(),
+                    vec![expected.r, expected.g, expected.b],
+                    "recording header background should end after DECKPREP at x={x}"
+                );
+            }
             let pixels = canvas
                 .read_pixels(
                     Rect::new(14, 43, 162, 7),

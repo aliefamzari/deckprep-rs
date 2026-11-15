@@ -1768,8 +1768,52 @@ fn tiny_glyph(character: char) -> [u8; 5] {
         'V' => [5, 5, 5, 5, 2],
         'Y' => [5, 5, 2, 2, 2],
         '?' => [6, 1, 2, 0, 2],
+        _ if !character.is_ascii() => unicode_tiny_glyph(character).unwrap_or([6, 1, 2, 0, 2]),
         _ => [0; 5],
     }
+}
+
+fn unicode_bitmap(character: char) -> Option<[u8; 8]> {
+    use font8x8::UnicodeFonts;
+
+    font8x8::LATIN_FONTS
+        .get(character)
+        .or_else(|| font8x8::GREEK_FONTS.get(character))
+        .or_else(|| font8x8::HIRAGANA_FONTS.get(character))
+        .or_else(|| font8x8::BOX_FONTS.get(character))
+        .or_else(|| font8x8::BLOCK_FONTS.get(character))
+        .or_else(|| font8x8::MISC_FONTS.get(character))
+        .or_else(|| font8x8::SGA_FONTS.get(character))
+}
+
+fn unicode_glyph(character: char) -> Option<[u8; 7]> {
+    let bitmap = unicode_bitmap(character)?;
+    Some(std::array::from_fn(|row| {
+        let source_y = (row * 2 + 1) * 8 / 14;
+        (0..5).fold(0, |pixels, column| {
+            let source_x = (column * 2 + 1) * 8 / 10;
+            if bitmap[source_y] & (1 << source_x) != 0 {
+                pixels | (1 << (4 - column))
+            } else {
+                pixels
+            }
+        })
+    }))
+}
+
+fn unicode_tiny_glyph(character: char) -> Option<[u8; 5]> {
+    let bitmap = unicode_bitmap(character)?;
+    Some(std::array::from_fn(|row| {
+        let source_y = (row * 2 + 1) * 8 / 10;
+        (0..3).fold(0, |pixels, column| {
+            let source_x = (column * 2 + 1) * 8 / 6;
+            if bitmap[source_y] & (1 << source_x) != 0 {
+                pixels | (1 << (2 - column))
+            } else {
+                pixels
+            }
+        })
+    }))
 }
 
 fn draw_counter(canvas: &mut Canvas<Window>, x: i32, y: i32, value: u32) -> Result<(), String> {
@@ -3679,6 +3723,55 @@ mod tests {
     }
 
     #[test]
+    fn unicode_glyphs_cover_latin_greek_hiragana_and_symbols() {
+        for character in ['é', 'ñ', 'Ω', 'あ', '╬', '█'] {
+            let glyph = glyph(character);
+            assert!(
+                glyph.iter().any(|row| *row != 0),
+                "main glyph for {character} is empty"
+            );
+            let compact = tiny_glyph(character);
+            assert!(
+                compact.iter().any(|row| *row != 0),
+                "compact glyph for {character} is empty"
+            );
+        }
+        assert_eq!(glyph('A'), [14, 17, 17, 31, 17, 17, 17]);
+        assert_eq!(glyph('🦊'), glyph('?'));
+        assert_eq!(tiny_glyph('🦊'), tiny_glyph('?'));
+    }
+
+    #[test]
+    #[ignore = "requires SDL video; run with SDL_VIDEODRIVER=dummy"]
+    fn unicode_text_renders_in_main_and_compact_fonts() {
+        let sdl = sdl2::init().unwrap();
+        let video = sdl.video().unwrap();
+        let window = video
+            .window("unicode font regression", 160, 32)
+            .hidden()
+            .build()
+            .unwrap();
+        let mut canvas = window.into_canvas().software().build().unwrap();
+        canvas.set_draw_color(BACKGROUND);
+        canvas.clear();
+        text(&mut canvas, 1, 0, "Café Ω あ ╬ █ 🦊", 1, CREAM).unwrap();
+        tiny_text(&mut canvas, 1, 10, "éΩあ╬█🦊", PHOSPHOR).unwrap();
+        let pixels = canvas
+            .read_pixels(None, sdl2::pixels::PixelFormatEnum::RGB24)
+            .unwrap();
+        assert!(
+            pixels
+                .chunks_exact(3)
+                .any(|pixel| pixel == [CREAM.r, CREAM.g, CREAM.b])
+        );
+        assert!(
+            pixels
+                .chunks_exact(3)
+                .any(|pixel| pixel == [PHOSPHOR.r, PHOSPHOR.g, PHOSPHOR.b])
+        );
+    }
+
+    #[test]
     fn queue_name_editor_flow_and_overwrite_confirmation() {
         let root = std::env::temp_dir().join("deckprep-ui-queue-test");
         std::fs::create_dir_all(&root).unwrap();
@@ -4130,6 +4223,7 @@ fn glyph(character: char) -> [u8; 7] {
         '=' => [0, 0, 31, 0, 31, 0, 0],
         ',' => [0, 0, 0, 0, 0, 12, 4],
         '.' => [0, 0, 0, 0, 0, 12, 12],
+        _ if !character.is_ascii() => unicode_glyph(character).unwrap_or([14, 17, 1, 2, 4, 0, 4]),
         _ => [0; 7],
     }
 }

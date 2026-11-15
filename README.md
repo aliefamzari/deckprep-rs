@@ -9,6 +9,7 @@ The current milestone provides:
 - SDL2 rendering with integer scaling
 - FFprobe-backed track discovery and FFplay preview
 - Scrolling track browser with long-name marquee and scrollbar
+- Unicode bitmap glyphs for extended Latin, Greek, Hiragana, box-drawing and block symbols in track and profile text
 - Keyboard navigation and track selection
 - Desktop, Pi, and inactive GPIO/SCART runtime profiles
 - Static, linear, calibrated, and reel-physics tape counters

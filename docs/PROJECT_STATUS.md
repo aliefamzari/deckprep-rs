@@ -62,7 +62,7 @@ Additional workflow features:
 - Prep countdown status blinks red every 350 ms; leader-gap, recording, track-gap, and completion statuses retain their normal styling.
 - Recording displays the live local system date/time (YYYY-MM-DD HH:MM:SS) below the SESSION header, alongside the bounded phase status.
 - A centered LOADING RECORDING popup is presented before recording-session audio and meter preparation, and disappears when the countdown begins or an error returns to the main screen.
-- Recording uses an equal-width 50:50 layout with a centered gutter. Session and Now Playing bars each show TOTAL TIME above, elapsed time inside-left, and remaining time inside-right, with no duplicate time readouts. Cassette animation sits above stereo meters on the right; a five-row scrolling session list occupies the lower right.
+- Recording uses an equal-width 50:50 layout with a centered gutter. Session and Now Playing bars each show TOTAL TIME above, elapsed time inside-left, and remaining time inside-right; the session area also estimates COMPLETED AT using remaining session time and PREP countdown. Cassette animation sits above stereo meters on the right; a five-row scrolling session list occupies the lower right.
 - Peak normalization and LUFS normalization through FFmpeg.
 - Optional `none` normalization in profiles, wizard, and editor uses original source files for preview and recording without conversion or normalized cache writes.
 - Background normalization for N and Enter shows the current file, method, completed-track progress, and cache hits; Escape/Q cancels between tracks. Review labels original files as ORIG; preparation failures return to the main screen.

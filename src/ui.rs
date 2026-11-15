@@ -1652,7 +1652,21 @@ impl AppUi {
             1,
             CREAM,
         )?;
-        recording_progress_bar(canvas, 14, 125, elapsed_seconds, total_seconds, 140)?;
+        text(
+            canvas,
+            14,
+            119,
+            &completion_time_label(
+                phase,
+                elapsed_seconds,
+                total_seconds,
+                marquee_elapsed,
+                chrono::Local::now(),
+            ),
+            1,
+            AMBER,
+        )?;
+        recording_progress_bar(canvas, 14, 129, elapsed_seconds, total_seconds, 140)?;
 
         let current_label = current_track
             .and_then(|index| track_names.get(index))
@@ -1667,7 +1681,7 @@ impl AppUi {
             14,
             177,
             &format!(
-                "TOTAL TIME: {:02}:{:02}",
+                "TRACK TIME: {:02}:{:02}",
                 track_total / 60,
                 track_total % 60
             ),
@@ -2417,6 +2431,25 @@ fn recording_phase_color(phase: &str, elapsed: Duration) -> Option<Color> {
     }
 }
 
+fn completion_time_label(
+    phase: &str,
+    elapsed_seconds: u32,
+    total_seconds: u32,
+    countdown_remaining: Duration,
+    now: chrono::DateTime<chrono::Local>,
+) -> String {
+    let prep_remaining = if phase.starts_with("PREP ") && phase != "PREP COMPLETE" {
+        countdown_remaining.as_secs().min(u64::from(u32::MAX)) as u32
+    } else {
+        0
+    };
+    let remaining = total_seconds
+        .saturating_sub(elapsed_seconds)
+        .saturating_add(prep_remaining);
+    let completion = now + chrono::Duration::seconds(i64::from(remaining));
+    format!("COMPLETED AT: {}", completion.format("%H:%M"))
+}
+
 fn recording_progress_bar(
     canvas: &mut Canvas<Window>,
     x: i32,
@@ -2674,6 +2707,30 @@ mod tests {
             ui.recording_session_label(&profile),
             "[My Deck+Evening_Mix_2]"
         );
+    }
+
+    #[test]
+    fn completion_time_includes_remaining_session_and_prep_countdown() {
+        let now = chrono::Local::now();
+        let cases = [
+            ("PREP 10S - Q CANCEL", 0, 300, Duration::from_secs(10), 310),
+            (
+                "LEADER GAP 05S - Q CANCEL",
+                30,
+                300,
+                Duration::from_secs(5),
+                270,
+            ),
+            ("RECORDING 2/4", 75, 300, Duration::ZERO, 225),
+            ("PREP COMPLETE", 300, 300, Duration::ZERO, 0),
+        ];
+        for (phase, elapsed, total, countdown, remaining) in cases {
+            let expected = now + chrono::Duration::seconds(remaining);
+            assert_eq!(
+                completion_time_label(phase, elapsed, total, countdown, now),
+                format!("COMPLETED AT: {}", expected.format("%H:%M"))
+            );
+        }
     }
 
     #[test]
@@ -3490,7 +3547,7 @@ mod tests {
             }
             if current.is_some() {
                 for (x, y, color) in [
-                    (20, 127, RECORDING_PROGRESS),
+                    (20, 131, RECORDING_PROGRESS),
                     (20, 192, RECORDING_PROGRESS),
                     (188, 127, PHOSPHOR),
                     (188, 139, PHOSPHOR),

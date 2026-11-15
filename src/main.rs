@@ -5,7 +5,7 @@ use std::{
 };
 
 use deckprep_rs::audio::{AudioPlayer, diagnose_audio};
-use deckprep_rs::library::scan_tracks;
+use deckprep_rs::library::{AudioTrack, scan_tracks_excluding};
 use deckprep_rs::meter::StereoMeter;
 use deckprep_rs::normalize::{
     NormalizationEvent, NormalizationJob, NormalizationSettings, clean_stale_cache_files,
@@ -59,7 +59,7 @@ fn main() -> Result<(), String> {
     remember_active_profile(&loaded_path);
     let output_folder = Path::new(&profile.tracks_folder).join(&profile.normalized_folder);
     let _ = clean_stale_cache_files(&output_folder);
-    let (tracks, library_error) = match scan_tracks(&profile.tracks_folder) {
+    let (tracks, library_error) = match scan_profile_tracks(&profile) {
         Ok(tracks) => (tracks, None),
         Err(error) => (Vec::new(), Some(error)),
     };
@@ -282,7 +282,7 @@ fn main() -> Result<(), String> {
                                             }
                                             if folder_changed {
                                                 let (new_tracks, new_error) =
-                                                    match scan_tracks(&profile.tracks_folder) {
+                                                    match scan_profile_tracks(&profile) {
                                                         Ok(tracks) => (tracks, None),
                                                         Err(error) => (Vec::new(), Some(error)),
                                                     };
@@ -835,11 +835,16 @@ fn leave_review(
 }
 
 fn reload_library(ui: &mut AppUi, profile: &RuntimeProfile) {
-    let (tracks, error) = match scan_tracks(&profile.tracks_folder) {
+    let (tracks, error) = match scan_profile_tracks(profile) {
         Ok(tracks) => (tracks, None),
         Err(error) => (Vec::new(), Some(error)),
     };
     ui.reset_library(tracks, error);
+}
+
+fn scan_profile_tracks(profile: &RuntimeProfile) -> Result<Vec<AudioTrack>, String> {
+    let normalized_folder = Path::new(&profile.tracks_folder).join(&profile.normalized_folder);
+    scan_tracks_excluding(&profile.tracks_folder, normalized_folder)
 }
 
 struct TrackPreparation {

@@ -33,7 +33,7 @@ The original Python implementation remains the behavioral reference in the sibli
 
 ### Audio library and preview
 
-- FFprobe-backed discovery for MP3, WAV, FLAC, WebM, M4A, AAC, and OGG.
+- Recursive FFprobe-backed track discovery for MP3, WAV, FLAC, WebM, M4A, AAC, and OGG; the configured normalized-output folder is excluded.
 - FFplay preview with P play/pause, X stop, and H/L or Left/Right seek by 10 seconds.
 - Built-in calibration test-tone generator with keys 1-5 (400 Hz level calibration, 1 kHz reference, 10 kHz bias, 15 kHz azimuth, and 20 Hz-20 kHz logarithmic sweep).
 - Test-tone status stays visible as PLAYING TEST TONE while active (PAUSED when paused) on the main and review screens, and clears when stopped, finished, or replaced by track playback.
@@ -95,7 +95,7 @@ Additional workflow features:
 - Ctrl+O opens a queue browser; users choose a named queue, and missing tracks are reported with automatic filename-based path relocation fallback.
 - Queue selection order and repeated/duplicate tracks are preserved when loading and used for the prep session.
 
-Local media and generated queue files are ignored by Git. Audio must be supplied locally in `tracks/` or via the profile's `tracks_folder`.
+Local media and generated queue files are ignored by Git. Audio can be organized in subfolders under `tracks/` or the profile's `tracks_folder`; the configured normalized-output folder is excluded from discovery.
 
 ## Validation
 

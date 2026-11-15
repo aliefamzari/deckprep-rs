@@ -584,36 +584,37 @@ pub fn render_legend(canvas: &mut Canvas<Window>, context: LegendContext) -> Res
     text(canvas, 40, 36, "CONTROL LEGEND", 2, PHOSPHOR)?;
     let lines: &[(&str, &str)] = match context {
         LegendContext::Main => &[
-            ("UP/DOWN", "MOVE TRACK"),
+            ("UP/DOWN/J/K", "MOVE TRACK"),
             ("SPACE", "SELECT"),
             ("C", "CLEAR SELECTION"),
-            ("1-5", "CALIBRATION TONES"),
-            ("P", "PREVIEW"),
-            ("X", "STOP"),
+            ("1-5", "CAL TONES"),
+            ("P / X", "PREVIEW / STOP"),
+            ("LEFT/RIGHT", "SEEK 10S"),
             ("N", "NORMALIZE"),
-            ("CTRL-S/O", "QUEUE SAVE/BROWSE"),
+            ("S / CTRL-S", "SAVE PROF/Q"),
+            ("CTRL-O", "OPEN QUEUE"),
             ("L", "LOAD PROFILE"),
-            ("ENTER", "PREPARE"),
-            ("TAB / V", "SELECTED QUEUE"),
-            ("W / B", "EDITOR / FOLDER"),
+            ("ENTER", "ARM PREPARE"),
+            ("W / TAB / V", "EDITOR/QUEUE"),
         ],
         LegendContext::Review => &[
-            ("UP/DOWN", "MOVE TRACK"),
+            ("UP/DOWN/J/K", "MOVE TRACK"),
             ("PGUP/PGDN", "JUMP"),
-            ("1-5", "CALIBRATION TONES"),
+            ("HOME/END", "FIRST/LAST"),
+            ("1-5", "CAL TONES"),
             ("P", "PREVIEW"),
             ("X", "STOP"),
-            ("H/L", "SEEK 10 SEC"),
+            ("LEFT/RIGHT/H/L", "SEEK 10S"),
             ("ENTER", "COUNTDOWN"),
-            ("ESC", "BACK"),
+            ("ESC/Q", "BACK"),
         ],
         LegendContext::ProfileEditor => &[
-            ("UP/DOWN", "NAVIGATE FIELDS"),
-            ("[TXT] FIELDS", "TYPE TEXT / BKSP"),
-            ("[OPT] FIELDS", "LEFT/RIGHT CHANGE"),
-            ("F2", "BROWSE TRACK FOLDER"),
-            ("CTRL-S", "SAVE PROFILE"),
-            ("ESC", "CLOSE EDITOR"),
+            ("UP/DOWN/J/K", "NAVIGATE"),
+            ("[TXT]", "TYPE / BKSP TEXT"),
+            ("[OPT]", "LEFT/RIGHT/H/L CHANGE"),
+            ("F2", "BROWSE FOLDER"),
+            ("CTRL-S", "SAVE"),
+            ("ESC / Q", "CLOSE"),
         ],
     };
     let spacing = if lines.len() > 10 {
@@ -1806,6 +1807,7 @@ fn tiny_glyph(character: char) -> [u8; 5] {
         'T' => [7, 2, 2, 2, 2],
         'U' => [5, 5, 5, 5, 2],
         'V' => [5, 5, 5, 5, 2],
+        'X' => [5, 5, 2, 5, 5],
         'Y' => [5, 5, 2, 2, 2],
         '?' => [6, 1, 2, 0, 2],
         _ if !character.is_ascii() => unicode_tiny_glyph(character).unwrap_or([6, 1, 2, 0, 2]),
@@ -4025,6 +4027,7 @@ mod tests {
             );
         }
         assert_eq!(glyph('A'), [14, 17, 17, 31, 17, 17, 17]);
+        assert_eq!(tiny_glyph('X'), [5, 5, 2, 5, 5]);
         assert_eq!(glyph('\u{10FFFF}'), glyph('?'));
         assert_eq!(tiny_glyph('\u{10FFFF}'), tiny_glyph('?'));
     }

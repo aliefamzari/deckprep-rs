@@ -38,20 +38,31 @@ pub fn scan_tracks(folder: impl AsRef<Path>) -> Result<Vec<AudioTrack>, String> 
     scan_tracks_with(folder.as_ref(), "ffprobe")
 }
 
+pub fn scan_tracks_excluding(
+    folder: impl AsRef<Path>,
+    excluded_folder: impl AsRef<Path>,
+) -> Result<Vec<AudioTrack>, String> {
+    scan_tracks_excluding_with(folder.as_ref(), Some(excluded_folder.as_ref()), "ffprobe")
+}
+
 fn scan_tracks_with(folder: &Path, ffprobe: &str) -> Result<Vec<AudioTrack>, String> {
+    scan_tracks_excluding_with(folder, None, ffprobe)
+}
+
+fn scan_tracks_excluding_with(
+    folder: &Path,
+    excluded_folder: Option<&Path>,
+    ffprobe: &str,
+) -> Result<Vec<AudioTrack>, String> {
     if !folder.is_dir() {
         return Err(format!("track folder not found: {}", folder.display()));
     }
 
-    let mut paths: Vec<PathBuf> = fs::read_dir(folder)
-        .map_err(|error| format!("failed to read {}: {error}", folder.display()))?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && is_supported(path))
-        .collect();
+    let mut paths = Vec::new();
+    collect_track_paths(folder, excluded_folder, &mut paths)?;
     paths.sort_by_key(|path| {
-        path.file_name()
-            .unwrap_or_default()
+        path.strip_prefix(folder)
+            .unwrap_or(path)
             .to_string_lossy()
             .to_lowercase()
     });
@@ -60,6 +71,33 @@ fn scan_tracks_with(folder: &Path, ffprobe: &str) -> Result<Vec<AudioTrack>, Str
         .into_iter()
         .filter_map(|path| probe_track(&path, ffprobe).ok())
         .collect())
+}
+
+fn collect_track_paths(
+    folder: &Path,
+    excluded_folder: Option<&Path>,
+    paths: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let entries = fs::read_dir(folder)
+        .map_err(|error| format!("failed to read {}: {error}", folder.display()))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("failed to read {}: {error}", folder.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+        if file_type.is_dir() {
+            if !excluded_folder.is_some_and(|excluded| path.starts_with(excluded)) {
+                collect_track_paths(&path, excluded_folder, paths)?;
+            }
+        } else if (file_type.is_file() || (file_type.is_symlink() && path.is_file()))
+            && is_supported(&path)
+        {
+            paths.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn is_supported(path: &Path) -> bool {
@@ -134,9 +172,15 @@ mod tests {
             .as_nanos();
         let root = std::env::temp_dir().join(format!("deckprep-library-{unique}"));
         let tracks = root.join("tracks");
-        fs::create_dir_all(&tracks).unwrap();
-        fs::write(tracks.join("B Song.FLAC"), []).unwrap();
-        fs::write(tracks.join("a-long-track-name.mp3"), []).unwrap();
+        let album_a = tracks.join("Album A").join("CD 1");
+        let album_b = tracks.join("Album B");
+        let normalized = tracks.join("normalized");
+        fs::create_dir_all(&album_a).unwrap();
+        fs::create_dir_all(&album_b).unwrap();
+        fs::create_dir_all(&normalized).unwrap();
+        fs::write(album_b.join("B Song.FLAC"), []).unwrap();
+        fs::write(album_a.join("a-long-track-name.mp3"), []).unwrap();
+        fs::write(normalized.join("cached.wav"), []).unwrap();
         fs::write(tracks.join("notes.txt"), []).unwrap();
 
         let probe = root.join("ffprobe-test");
@@ -149,11 +193,15 @@ mod tests {
         permissions.set_mode(0o755);
         fs::set_permissions(&probe, permissions).unwrap();
 
-        let result = scan_tracks_with(&tracks, probe.to_str().unwrap()).unwrap();
+        let result =
+            scan_tracks_excluding_with(&tracks, Some(&normalized), probe.to_str().unwrap())
+                .unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].name, "a-long-track-name.mp3");
         assert_eq!(result[0].duration_seconds, 126);
+        assert_eq!(result[0].path, album_a.join("a-long-track-name.mp3"));
         assert_eq!(result[1].name, "B Song.FLAC");
+        assert_eq!(result[1].path, album_b.join("B Song.FLAC"));
         fs::remove_dir_all(root).unwrap();
     }
 

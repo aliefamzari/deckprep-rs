@@ -8,7 +8,7 @@ use crate::config::{CounterMode, DisplayBackend, NormalizationMethod, RuntimePro
 
 pub fn run(output: impl AsRef<Path>) -> Result<(), String> {
     let output = output.as_ref();
-    println!("DeckPrep profile wizard");
+    println!("REELHEAD profile wizard");
     println!("Press Enter to keep the value shown in brackets.\n");
 
     let name = prompt("Profile name", "my-deck")?;

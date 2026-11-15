@@ -201,7 +201,7 @@ pub struct AudioDiagnostics {
 impl AudioDiagnostics {
     pub fn report(&self) -> String {
         let mut lines = Vec::new();
-        lines.push("=== DECKPREP AUDIO HARDWARE DIAGNOSTICS ===".to_owned());
+        lines.push("=== REELHEAD AUDIO HARDWARE DIAGNOSTICS ===".to_owned());
         lines.push(format!("Configured Audio Backend: {}", self.backend));
         lines.push(format!("Configured Audio Device:  {}", self.device));
         lines.push(format!(
@@ -357,7 +357,7 @@ mod tests {
     fn audio_diagnostics_report_formats() {
         let diag = diagnose_audio("alsa", "plughw:CARD=DZero,DEV=0");
         let report = diag.report();
-        assert!(report.contains("=== DECKPREP AUDIO HARDWARE DIAGNOSTICS ==="));
+        assert!(report.contains("=== REELHEAD AUDIO HARDWARE DIAGNOSTICS ==="));
         assert!(report.contains("Configured Audio Backend: alsa"));
         assert!(report.contains("Configured Audio Device:  plughw:CARD=DZero,DEV=0"));
     }

@@ -29,7 +29,7 @@ pub fn write_tracklist(
     let result = (|| -> Result<(), String> {
         let mut file = File::create(&temporary_path)
             .map_err(|error| format!("failed to create tracklist: {error}"))?;
-        writeln!(file, "DeckPrep Tracklist")
+        writeln!(file, "REELHEAD Tracklist")
             .and_then(|_| writeln!(file, "=================="))
             .and_then(|_| {
                 writeln!(

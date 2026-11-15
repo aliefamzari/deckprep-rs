@@ -1,6 +1,6 @@
-# DeckPrep RS
+# REELHEAD
 
-DeckPrep RS is a Raspberry Pi 4 cassette-recording workstation, rebuilt in Rust from
+REELHEAD is a Raspberry Pi 4 cassette-recording workstation, rebuilt in Rust from
 the original Python `deckpreprec` application. Its interface is designed on a fixed
 320x240 canvas for eventual 240p60 output to a Sony PVM.
 

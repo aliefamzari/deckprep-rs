@@ -67,7 +67,7 @@ fn main() -> Result<(), String> {
     let sdl = sdl2::init()?;
     let video = sdl.video()?;
     let mut window_builder = video.window(
-        &format!("DeckPrep - {}", profile.name),
+        &format!("REELHEAD - {}", profile.name),
         profile.logical_width * profile.window_scale,
         profile.logical_height * profile.window_scale,
     );

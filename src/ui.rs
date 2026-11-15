@@ -1354,7 +1354,7 @@ impl AppUi {
 
         outline(canvas, Rect::new(6, 6, 308, 228), DIM)?;
         fill(canvas, Rect::new(9, 9, 302, 25), PANEL)?;
-        text(canvas, 14, 13, "DECKPREP", 2, PHOSPHOR)?;
+        text(canvas, 14, 13, "REELHEAD", 2, PHOSPHOR)?;
         text(canvas, 121, 14, "TAPE RECORDING CONSOLE", 1, CREAM)?;
         text(canvas, 121, 24, "PROFILE:", 1, AMBER)?;
         text(
@@ -1623,7 +1623,7 @@ impl AppUi {
         canvas.clear();
         outline(canvas, Rect::new(6, 6, 308, 228), DIM)?;
         fill(canvas, Rect::new(9, 9, 102, 25), PANEL)?;
-        text(canvas, 14, 13, "DECKPREP", 2, PHOSPHOR)?;
+        text(canvas, 14, 13, "REELHEAD", 2, PHOSPHOR)?;
         text(canvas, 121, 14, "RECORDING MODE", 1, CREAM)?;
         text(canvas, 121, 24, "SESSION:", 1, AMBER)?;
         text(
@@ -3519,7 +3519,7 @@ mod tests {
                         .read_pixels(Rect::new(x, 10, 1, 1), sdl2::pixels::PixelFormatEnum::RGB24)
                         .unwrap(),
                     vec![expected.r, expected.g, expected.b],
-                    "recording header background should end after DECKPREP at x={x}"
+                    "recording header background should end after REELHEAD at x={x}"
                 );
             }
             let pixels = canvas

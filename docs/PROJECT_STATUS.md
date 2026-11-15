@@ -1,10 +1,10 @@
-# DeckPrep RS Project Status
+# REELHEAD Project Status
 
 Last updated: 2026-09-18
 
 ## Project
 
-DeckPrep RS is the Rust replacement for the original Python `deckpreprec` cassette preparation tool. The target platform is Raspberry Pi 4 with keyboard input, an iBasso D-Zero USB DAC, and eventual 320x240p60 output to a Sony PVM 14M4E through a GPIO RGBS/SCART setup.
+REELHEAD is the Rust replacement for the original Python `deckpreprec` cassette preparation tool. The target platform is Raspberry Pi 4 with keyboard input, an iBasso D-Zero USB DAC, and eventual 320x240p60 output to a Sony PVM 14M4E through a GPIO RGBS/SCART setup.
 
 The repository is published at:
 

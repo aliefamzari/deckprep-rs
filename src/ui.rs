@@ -1670,7 +1670,7 @@ impl AppUi {
 
         let current_label = current_track
             .and_then(|index| track_names.get(index))
-            .map(|name| scrolling_text(name, 23, marquee_elapsed))
+            .map(|name| scrolling_text_pixels(name, 140, marquee_elapsed))
             .unwrap_or_else(|| "STANDBY".to_owned());
         text(canvas, 14, 150, "NOW PLAYING", 1, AMBER)?;
         text(canvas, 14, 162, &current_label, 1, PHOSPHOR)?;
@@ -2582,25 +2582,84 @@ fn scrolling_text(value: &str, width: usize, elapsed: Duration) -> String {
 }
 
 fn track_name_text(name: &str, width: usize, highlighted: bool, elapsed: Duration) -> String {
+    track_name_text_pixels(name, width.saturating_mul(6), highlighted, elapsed)
+}
+
+fn track_name_text_pixels(
+    name: &str,
+    width: usize,
+    highlighted: bool,
+    elapsed: Duration,
+) -> String {
     if highlighted {
-        scrolling_text(name, width, elapsed)
+        scrolling_text_pixels(name, width, elapsed)
     } else {
-        clipped_text(name, width)
+        clipped_text_pixels(name, width)
     }
 }
 
-fn clipped_text(value: &str, width: usize) -> String {
+fn text_character_width(character: char) -> usize {
+    if !character.is_ascii()
+        && unicode_bitmap(character).is_none()
+        && unifont_glyph(character).is_some()
+    {
+        9
+    } else {
+        6
+    }
+}
+
+fn text_pixel_width(value: &str) -> usize {
+    value.chars().map(text_character_width).sum()
+}
+
+fn fit_text_to_pixels(characters: impl IntoIterator<Item = char>, width: usize) -> String {
+    let mut result = String::new();
+    let mut used = 0;
+    for character in characters {
+        let advance = text_character_width(character);
+        if used + advance > width {
+            break;
+        }
+        result.push(character);
+        used += advance;
+    }
+    result
+}
+
+fn clipped_text_pixels(value: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
-    let characters: Vec<char> = value.chars().collect();
-    if characters.len() <= width {
-        return characters.into_iter().collect();
+    if text_pixel_width(value) <= width {
+        return value.to_owned();
     }
-    characters[..width - 1]
-        .iter()
-        .chain(std::iter::once(&'.'))
-        .collect()
+    let mut clipped = fit_text_to_pixels(value.chars(), width.saturating_sub(6));
+    clipped.push('.');
+    clipped
+}
+
+fn scrolling_text_pixels(value: &str, width: usize, elapsed: Duration) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if text_pixel_width(value) <= width {
+        return value.to_owned();
+    }
+    if elapsed < Duration::from_millis(900) {
+        let mut clipped = fit_text_to_pixels(value.chars(), width.saturating_sub(6));
+        clipped.push('.');
+        return clipped;
+    }
+    let padded: Vec<char> = format!("{value}    ").chars().collect();
+    if padded.is_empty() {
+        return String::new();
+    }
+    let offset = ((elapsed - Duration::from_millis(900)).as_millis() / 160) as usize;
+    fit_text_to_pixels(
+        (0..padded.len()).map(|index| padded[(offset + index) % padded.len()]),
+        width,
+    )
 }
 
 fn draw_scrollbar(
@@ -2765,6 +2824,75 @@ mod tests {
         assert_eq!(
             track_name_text(name, 8, true, Duration::from_millis(1060)),
             "bcdefghi"
+        );
+    }
+
+    #[test]
+    fn track_title_scrolling_respects_rendered_width_for_hangul() {
+        let name = "한국어한국어한국어한국어";
+        for width in [60, 84, 132, 140] {
+            for elapsed in [Duration::ZERO, Duration::from_secs(10)] {
+                let highlighted = track_name_text_pixels(name, width, true, elapsed);
+                let clipped = track_name_text_pixels(name, width, false, elapsed);
+                assert!(text_pixel_width(&highlighted) <= width);
+                assert!(text_pixel_width(&clipped) <= width);
+            }
+        }
+        assert_eq!(
+            track_name_text_pixels("abcdefghijklmn", 84, true, Duration::ZERO),
+            "abcdefghijklmn"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires SDL video; run with SDL_VIDEODRIVER=dummy"]
+    fn hangul_track_title_stays_clear_of_main_list_duration() {
+        let sdl = sdl2::init().unwrap();
+        let video = sdl.video().unwrap();
+        let window = video
+            .window("Hangul track row regression", 320, 240)
+            .hidden()
+            .build()
+            .unwrap();
+        let mut canvas = window.into_canvas().software().build().unwrap();
+        let track = AudioTrack {
+            name: "한국어한국어한국어한국어한국어한국어".to_owned(),
+            path: std::path::PathBuf::from("track.flac"),
+            duration_seconds: 123,
+            codec: "flac".to_owned(),
+        };
+        draw_tracks(
+            &mut canvas,
+            &[track],
+            0,
+            0,
+            &[false],
+            Duration::ZERO,
+            None,
+            &RuntimeProfile::default(),
+        )
+        .unwrap();
+        for y in 57..64 {
+            let gap = canvas
+                .read_pixels(
+                    Rect::new(140, y, 4, 1),
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap();
+            assert!(
+                gap.chunks_exact(3)
+                    .all(|pixel| pixel != [PHOSPHOR.r, PHOSPHOR.g, PHOSPHOR.b]),
+                "title overlaps duration gutter at y={y}"
+            );
+        }
+        assert_eq!(
+            canvas
+                .read_pixels(
+                    Rect::new(144, 57, 1, 1),
+                    sdl2::pixels::PixelFormatEnum::RGB24
+                )
+                .unwrap(),
+            vec![DIM.r, DIM.g, DIM.b]
         );
     }
 

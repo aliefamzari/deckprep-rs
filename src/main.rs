@@ -563,12 +563,6 @@ fn main() -> Result<(), String> {
                             player.stop()?;
                             preview_meter = None;
                         }
-                        Keycode::Left if !ui.queue_view() => {
-                            ui.handle_key(key, &profile);
-                        }
-                        Keycode::Right if !ui.queue_view() => {
-                            ui.handle_key(key, &profile);
-                        }
                         Keycode::Left => {
                             if let Some(track) = ui.current_track() {
                                 player.seek_by(-10.0, track.duration_seconds)?;

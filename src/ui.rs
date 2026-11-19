@@ -2580,6 +2580,7 @@ fn draw_tracks(
     }
 
     draw_scrollbar(canvas, tracks.len(), viewport_start)?;
+    text(canvas, 15, 190, &format_tracks_minutes(tracks), 1, PHOSPHOR)?;
     Ok(())
 }
 
@@ -2739,6 +2740,14 @@ fn draw_scrollbar_at(
     )
 }
 
+fn format_tracks_minutes(tracks: &[AudioTrack]) -> String {
+    let total_seconds: u64 = tracks
+        .iter()
+        .map(|track| u64::from(track.duration_seconds))
+        .sum();
+    format!("TRACKS {:.1} MIN", total_seconds as f64 / 60.0)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -2754,6 +2763,15 @@ mod tests {
                 codec: "pcm_s16le".to_owned(),
             })
             .collect()
+    }
+
+    #[test]
+    fn formats_total_library_track_time_in_minutes() {
+        let mut loaded = tracks(2);
+        loaded[0].duration_seconds = 63;
+        loaded[1].duration_seconds = 69;
+
+        assert_eq!(format_tracks_minutes(&loaded), "TRACKS 2.2 MIN");
     }
 
     #[test]

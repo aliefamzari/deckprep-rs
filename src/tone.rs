@@ -54,10 +54,10 @@ impl TestTone {
 
     pub fn filename(&self) -> &'static str {
         match self {
-            Self::Hz400 => "tone_400hz.wav",
-            Self::Hz1000 => "tone_1000hz.wav",
-            Self::Hz10000 => "tone_10000hz.wav",
-            Self::Hz15000 => "tone_15000hz.wav",
+            Self::Hz400 => "tone_400hz_v2.wav",
+            Self::Hz1000 => "tone_1000hz_v2.wav",
+            Self::Hz10000 => "tone_10000hz_v2.wav",
+            Self::Hz15000 => "tone_15000hz_v2.wav",
             Self::Sweep => "tone_sweep_20_20000hz.wav",
         }
     }
@@ -102,12 +102,16 @@ fn generate_test_tone_with(
         }
         _ => {
             let freq = tone.frequency_hz().unwrap();
-            let sine_filter = format!("sine=frequency={freq}:duration={duration}");
-            command.args(["-i", &sine_filter, "-ac", "2", "-ar", "44100"]);
+            let sine_filter = format!(
+                "aevalsrc='0.8*sin(2*PI*{freq}*t)|0.8*sin(2*PI*{freq}*t)':s=44100:d={duration}"
+            );
+            command.args(["-i", &sine_filter]);
         }
     }
 
-    command.args(["-c:a", "pcm_s16le"]).arg(&temporary_path);
+    command
+        .args(["-ac", "2", "-ar", "44100", "-c:a", "pcm_s16le"])
+        .arg(&temporary_path);
 
     let output = command
         .output()
@@ -159,11 +163,46 @@ mod tests {
 
         let path = generate_test_tone(TestTone::Hz400, &root).unwrap();
         assert!(path.is_file());
-        assert_eq!(path.file_name().unwrap(), "tone_400hz.wav");
+        assert_eq!(path.file_name().unwrap(), "tone_400hz_v2.wav");
 
         // Calling again reuses the cached file
         let path2 = generate_test_tone(TestTone::Hz400, &root).unwrap();
         assert_eq!(path, path2);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn generated_fixed_tone_has_expected_digital_level() {
+        let root = std::env::temp_dir().join(format!(
+            "deckprep-tone-level-test-{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = generate_test_tone(TestTone::Hz400, &root).unwrap();
+        let measured = Command::new("ffmpeg")
+            .args(["-hide_banner", "-i"])
+            .arg(&path)
+            .args(["-af", "volumedetect", "-f", "null", "-"])
+            .output()
+            .unwrap();
+        assert!(measured.status.success());
+
+        let diagnostics = String::from_utf8_lossy(&measured.stderr);
+        let volume_db = |label: &str| {
+            diagnostics
+                .lines()
+                .find_map(|line| {
+                    line.split_once(label)
+                        .and_then(|(_, value)| value.split_whitespace().next())
+                        .and_then(|value| value.parse::<f64>().ok())
+                })
+                .unwrap_or_else(|| panic!("missing {label} in FFmpeg output: {diagnostics}"))
+        };
+        assert!((-2.1..=-1.8).contains(&volume_db("max_volume:")));
+        assert!((-5.1..=-4.8).contains(&volume_db("mean_volume:")));
 
         fs::remove_dir_all(root).unwrap();
     }

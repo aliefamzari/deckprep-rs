@@ -54,6 +54,7 @@ Controls:
 - `Space`: select or deselect
 - `C`: clear all selected tracks
 - `1` / `2` / `3` / `4` / `5`: play calibration test tones (400 Hz level, 1 kHz ref, 10 kHz bias, 15 kHz azimuth, 20 Hz-20 kHz sweep)
+  - Tone amplitude is 0.8 peak (~-1.9 dBFS peak / -4.9 dBFS RMS); that digital level is not itself a 0 dB ANSI tape reference.
 - `P`: play or pause the highlighted track; navigation does not change playback
 - `Tab`/`V`: open the dedicated track/queue workspace
 - `Left`/`Right` or `H`/`L`: seek backward/forward 10 seconds
